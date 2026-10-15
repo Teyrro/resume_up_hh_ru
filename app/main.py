@@ -129,7 +129,7 @@ def run_once(cfg, notifier: Notifier) -> datetime:
             log.info("Итог: поднято=%s; %s", result.clicked, "; ".join(result.details) or "—")
             state["last_run"] = now.isoformat()
             state["last_clicked"] = result.clicked
-            state["available_at"] = [d.isoformat() for d in sorted(result.available_at)]
+            state["available_at"] = [d.isoformat() for d in sorted(set(result.available_at))]
             if result.clicked:
                 state["last_raised"] = now.isoformat()
             _save_state(cfg, state)
