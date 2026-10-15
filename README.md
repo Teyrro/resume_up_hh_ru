@@ -17,7 +17,8 @@
 3. Нажимает «Поднять» у резюме из `HH_RESUME_IDS`, у которых поднятие уже доступно.
 4. По тексту «Поднять вручную можно … в HH:MM» планирует следующий запуск (+ случайная
    задержка `JITTER_*`, но не раньше `MIN_INTERVAL_MINUTES`).
-5. При капче или 3 ошибках входа подряд останавливается и ждёт ручного `resume`.
+5. При капче или 3 ошибках входа подряд останавливается и ждёт `/resume` в Telegram
+   или ручного `resume`.
 
 ## Требования
 
@@ -62,6 +63,7 @@
 Пошагово: **[docs/telegram-setup.md](docs/telegram-setup.md)**.
 Кратко: бот через [@BotFather](https://t.me/BotFather) → `TG_BOT_TOKEN`;
 написать боту и взять chat_id из `getUpdates` → `TG_CHAT_ID`.
+Бот также принимает команды `/resume` (снять стоп) и `/help` — только из вашего чата.
 
 ## Конфигурация (`.env`)
 
@@ -147,7 +149,7 @@ docker compose logs -f
 | Остановить | `docker compose down` |
 | Перезапустить | `docker compose restart` |
 | Один проход вручную | `docker compose run --rm hh-autoraise once` |
-| Снять стоп после капчи | `docker compose run --rm hh-autoraise resume && docker compose restart` |
+| Снять стоп после капчи | команда `/resume` боту в Telegram, или `docker compose run --rm hh-autoraise resume && docker compose restart` |
 
 Обновление:
 
@@ -165,7 +167,8 @@ docker compose up -d
 
 1. Посмотреть `data/debug/` (скриншот страницы) и логи.
 2. При необходимости войти на hh.ru вручную в обычном браузере, подождать несколько часов.
-3. Снять стоп: `docker compose run --rm hh-autoraise resume && docker compose restart`.
+3. Снять стоп: отправить боту `/resume` (сервис сразу сделает проход) или
+   `docker compose run --rm hh-autoraise resume && docker compose restart`.
 
 ## Частые проблемы
 
@@ -204,7 +207,7 @@ app/
   hh.py        Playwright: проверка сессии, вход по коду, поднятие резюме
   mail.py      IMAP: ожидание письма hh.ru и извлечение кода
   schedule.py  разбор «можно … в HH:MM», расчёт следующего запуска
-  notify.py    Telegram-уведомления
+  notify.py    Telegram: уведомления и команды (/resume)
   main.py      точка входа: run | once | check | resume
 docs/
   gmail-setup.md     настройка Gmail (пароль приложения, IMAP)

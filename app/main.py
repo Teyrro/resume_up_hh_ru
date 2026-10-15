@@ -3,7 +3,7 @@
   python -m app.main run      — постоянная работа (по умолчанию в Docker)
   python -m app.main once     — один проход: вход при необходимости + поднятие
   python -m app.main check    — проверить IMAP, Telegram и вход на hh
-  python -m app.main resume   — снять стоп после капчи/ошибок входа
+  python -m app.main resume   — снять стоп после капчи/ошибок входа (или /resume в боте)
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
-import time
+import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -20,10 +20,50 @@ from playwright.sync_api import sync_playwright
 from . import config as config_mod
 from .hh import CaptchaError, LoginError, is_logged_in, login, open_context, raise_resumes
 from .mail import MailCodeReader
-from .notify import Notifier
+from .notify import CommandListener, Notifier
 from .schedule import next_run
 
 log = logging.getLogger("hh-autoraise")
+
+TG_HELP = """Команды:
+/resume — снять стоп и сразу запустить проход (нужна только после «⛔» ниже).
+/help — это сообщение.
+
+Что значат сообщения бота:
+
+ℹ️ «Сервис запущен» — контейнер (пере)запустился и сразу делает проход. \
+Ничего делать не нужно.
+
+ℹ️ «Выполнен повторный вход на hh.ru по коду из почты» — сессия hh.ru истекла, \
+сервис сам запросил код, нашёл его в письме и вошёл. Ничего делать не нужно.
+
+✅ «Поднято резюме: N» — нажата кнопка «Поднять» у N резюме. \
+Следующий раз — когда hh.ru снова разрешит (обычно через 4 часа).
+
+⚠️ «Ошибка входа: …» — не удалось войти: не нашлось поле на странице входа, \
+письмо с кодом не пришло или код не подошёл. Сервис повторит сам через 1–2 часа. \
+Если повторяется — проверьте почту (папка, спам) и data/debug.
+
+⚠️ «Непредвиденная ошибка: …» — сбой, не связанный со входом (сеть, hh.ru \
+не открылся, браузер упал). Повторит сам через 30 мин, дальше реже (до 4 ч).
+
+⚠️ «Сессия слетела, но дневной лимит попыток входа исчерпан» — за сутки уже было \
+MAX_LOGINS_PER_DAY входов по коду (по умолчанию 3). Чтобы не вызвать капчу \
+и не засыпать почту кодами, сервис ждёт до 9:00 следующего дня. \
+Ничего делать не нужно, но частые слёты сессии — повод заглянуть в логи.
+
+⛔ «hh.ru показал капчу…» — hh.ru заподозрил бота. Сервис остановлен, \
+чтобы не получить блокировку. Войдите на hh.ru вручную в обычном браузере \
+или подождите несколько часов, затем /resume.
+
+⛔ «3 ошибки входа подряд — сервис остановлен» — вход стабильно не работает \
+(чаще всего hh.ru поменял страницу входа или не приходят письма). \
+Посмотрите data/debug (скриншоты) и логи, устраните причину, затем /resume.
+
+Ответы на /resume:
+• «Стоп снят (…). Запускаю проход.» — стоп снят, проход начался сразу;
+• «Стоп-флага нет, сервис работает.» — останавливать было нечего.\
+"""
 
 
 def _load_state(cfg) -> dict:
@@ -84,13 +124,28 @@ def run_once(cfg, notifier: Notifier) -> datetime:
 
 def cmd_run(cfg, notifier: Notifier) -> None:
     tz = ZoneInfo(cfg.timezone)
+    wake = threading.Event()
+
+    def tg_resume() -> str:
+        if not cfg.stop_flag.exists():
+            return "Стоп-флага нет, сервис работает."
+        reason = cfg.stop_flag.read_text(encoding="utf-8").strip()
+        cfg.stop_flag.unlink(missing_ok=True)
+        wake.set()
+        return f"Стоп снят ({reason}). Запускаю проход."
+
+    if notifier.enabled:
+        CommandListener(notifier, {"/resume": tg_resume, "/help": lambda: TG_HELP}).start()
     notifier.send("Сервис запущен.")
     failures = 0
     while True:
         if cfg.stop_flag.exists():
             log.error("Сервис остановлен (%s). Разберитесь и выполните команду resume.",
                       cfg.stop_flag.read_text(encoding="utf-8").strip())
-            time.sleep(3600)
+            wake.wait(3600)
+            wake.clear()
+            if not cfg.stop_flag.exists():
+                failures = 0
             continue
         try:
             nxt = run_once(cfg, notifier)
@@ -99,7 +154,8 @@ def cmd_run(cfg, notifier: Notifier) -> None:
             cfg.stop_flag.write_text(f"captcha: {e}", encoding="utf-8")
             notifier.send("hh.ru показал капчу. Автоподнятие остановлено, чтобы не получить "
                           "блокировку. Войдите на hh вручную с этого IP или подождите сутки, "
-                          "затем выполните: docker compose run --rm hh-autoraise resume")
+                          "затем отправьте боту /resume "
+                          "(или: docker compose run --rm hh-autoraise resume)")
             continue
         except LoginError as e:
             failures += 1
@@ -107,7 +163,7 @@ def cmd_run(cfg, notifier: Notifier) -> None:
             if failures >= 3:
                 cfg.stop_flag.write_text(f"login: {e}", encoding="utf-8")
                 notifier.send("3 ошибки входа подряд — сервис остановлен. "
-                              "Нужна проверка (см. data/debug).")
+                              "Нужна проверка (см. data/debug), затем /resume.")
                 continue
             nxt = datetime.now(tz) + timedelta(minutes=60 * failures)
         except Exception as e:
@@ -118,7 +174,8 @@ def cmd_run(cfg, notifier: Notifier) -> None:
 
         wait = max(60.0, (nxt - datetime.now(tz)).total_seconds())
         log.info("Следующий запуск: %s (через %.0f мин)", nxt.strftime("%d.%m %H:%M"), wait / 60)
-        time.sleep(wait)
+        wake.wait(wait)
+        wake.clear()
 
 
 def cmd_check(cfg, notifier: Notifier) -> int:

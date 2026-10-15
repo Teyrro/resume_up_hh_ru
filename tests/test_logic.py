@@ -5,6 +5,7 @@ from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
 
 from app.mail import extract_code, message_text
+from app.notify import CommandListener, Notifier
 from app.schedule import next_run, parse_available_at
 
 TZ = ZoneInfo("Asia/Novosibirsk")
@@ -59,3 +60,42 @@ def test_message_text_html():
     msg["Subject"] = "Код подтверждения"
     msg.attach(MIMEText("<html><body><p>Код:&nbsp;<b>5530</b></p></body></html>", "html", "utf-8"))
     assert extract_code(message_text(msg)) == "5530"
+
+
+class _FakeNotifier(Notifier):
+    def __init__(self) -> None:
+        super().__init__("token", "111")
+        self.sent: list[str] = []
+
+    def send(self, text: str) -> None:
+        self.sent.append(text)
+
+
+def _listener(calls: list[str]) -> tuple[CommandListener, _FakeNotifier]:
+    notifier = _FakeNotifier()
+    return CommandListener(notifier, {"/resume": lambda: calls.append("r") or "ok"}), notifier
+
+
+def test_command_from_owner():
+    calls: list[str] = []
+    listener, notifier = _listener(calls)
+    listener.handle({"chat": {"id": 111}, "text": "/resume@my_bot"})
+    assert calls == ["r"]
+    assert notifier.sent == ["ok"]
+
+
+def test_command_from_stranger_ignored():
+    calls: list[str] = []
+    listener, notifier = _listener(calls)
+    listener.handle({"chat": {"id": 222}, "text": "/resume"})
+    assert calls == []
+    assert notifier.sent == []
+
+
+def test_unknown_command_lists_commands():
+    calls: list[str] = []
+    listener, notifier = _listener(calls)
+    listener.handle({"chat": {"id": 111}, "text": "/start"})
+    listener.handle({"chat": {"id": 111}, "text": "привет"})
+    assert calls == []
+    assert notifier.sent == ["Команды: /resume"]
