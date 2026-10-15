@@ -1,0 +1,26 @@
+services:
+  hh-autoraise:
+    build: .
+    image: hh-autoraise:latest
+    container_name: hh-autoraise
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: Asia/Novosibirsk
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    init: true
+    shm_size: "1gb"
+    networks:
+      - hh-autoraise
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  hh-autoraise:
+    name: hh-autoraise
+    driver: bridge
