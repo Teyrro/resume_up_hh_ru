@@ -11,7 +11,9 @@ services:
     volumes:
       - ./data:/data
     init: true
-    shm_size: "1gb"
+    shm_size: "256m"
+    # Chromium запускается только на время прохода; лимит защищает соседние сервисы (xray).
+    mem_limit: 700m
     networks:
       - hh-autoraise
     logging:
