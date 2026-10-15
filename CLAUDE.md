@@ -12,21 +12,17 @@ dev.hh.ru: «поддержка API для соискателей прекращ
 получить нельзя, поэтому браузерная автоматизация (Playwright).
 
 ## Данные
-- Аккаунт hh: соискатель, почта для входа и кодов — <email, см. CLAUDE.local.md>
-- Резюме (hash):
-  - Python Backend-разработчик — `<hash резюме 1>`
-  - Support L2 / Application Support — `<hash резюме 2>`
+Личное (email, hash резюме, сервер, бот, git-автор) — в `CLAUDE.local.md` (не в git).
+Репозиторий публичный: личные данные, IP и секреты в отслеживаемые файлы не писать.
+- Аккаунт hh: соискатель, вход по email с кодом; два резюме.
 - Часовой пояс: Asia/Novosibirsk. Лимит hh: ручное поднятие не чаще раза в 4 часа.
-- GitHub: `https://github.com/Teyrro/resume_up_hh_ru` (remote `origin`, ветка `master`).
+- GitHub: `https://github.com/Teyrro/resume_up_hh_ru` (публичный, remote `origin`, ветка `master`).
   Пуш из WSL пока не работает: `gh` установлен в `~/.local/bin`, но пользователь не вошёл
-  (`gh auth login`), SSH-ключ к GitHub не привязан. На GitHub только первый коммит —
-  остальные доставлялись на сервер через `git bundle`. Репозиторий читается без
-  авторизации (вероятно, публичный), а здесь email и hash резюме — уточнить у пользователя.
-- Коммиты — от `<email, см. CLAUDE.local.md>` (локальный `user.email` репозитория;
-  глобальный git config рабочий, не трогать).
+  (`gh auth login`). История переписана без личных данных — нужен `git push --force`;
+  на сервер коммиты доставляются через `git bundle`.
 
 ## Сервер
-- `ssh vpn` (<адрес сервера>, root), 2 ГБ RAM, 30 ГБ диск. SSH-конфиг в WSL у пользователя.
+- `ssh vpn` (адрес — в `CLAUDE.local.md`), 2 ГБ RAM, 30 ГБ диск.
 - 3x-ui работает НЕ в Docker, а как systemd: `x-ui.service`, `xray.service`
   (порты 443, 2053, 2096). ufw активен (deny incoming), fail2ban на SSH.
   **Не трогать x-ui/xray, ufw/iptables/nftables, сеть хоста.**
@@ -77,8 +73,8 @@ dev.hh.ru: «поддержка API для соискателей прекращ
 
 ## Переменные окружения (.env)
 ```
-HH_LOGIN_EMAIL=<email, см. CLAUDE.local.md>
-HH_RESUME_IDS=<hash резюме 1>,<hash резюме 2>
+HH_LOGIN_EMAIL=<email аккаунта hh, см. CLAUDE.local.md>
+HH_RESUME_IDS=<hash резюме через запятую, см. CLAUDE.local.md>
 IMAP_PASSWORD=<пароль приложения Google, 16 символов без пробелов и кавычек>
 TG_BOT_TOKEN=<токен бота>
 TG_CHAT_ID=<chat_id пользователя>
@@ -93,8 +89,7 @@ JITTER_MAX_MINUTES=180, MAX_LOGINS_PER_DAY=3, HEADLESS=1.
 ## Что осталось
 1. Пользователь копирует `.env` на сервер → остановить локальный сервис, запустить на
    сервере (`check`, `up -d`), проверить логи и `/next`.
-2. `gh auth login` пользователем → `git push origin master` (локально коммиты впереди).
-   Решить с пользователем приватность репозитория.
+2. `gh auth login` пользователем → `git push --force origin master` (история переписана).
 3. Пользователю отозвать доступы старого hh-agent: Gmail OAuth
    (myaccount.google.com/permissions) и устройство ChatGPT/Codex.
 4. Идеи (не согласованы): уведомлять, если поднять было можно, но не вышло; подробности
