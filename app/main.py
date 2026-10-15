@@ -249,6 +249,13 @@ def cmd_check(cfg, notifier: Notifier) -> int:
 def main(argv: list[str]) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cmd = argv[1] if len(argv) > 1 else "run"
+    required, optional = config_mod.missing_vars()
+    if required:
+        print(f"Переменные: не хватает обязательных — {', '.join(required)} (см. .env.example)")
+        return 1
+    if cmd == "check":
+        print("Переменные: OK" + (f" (не заданы необязательные: {', '.join(optional)})"
+                                   if optional else ""))
     cfg = config_mod.load()
     notifier = Notifier(cfg.tg_bot_token, cfg.tg_chat_id)
     if cmd == "run":

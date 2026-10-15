@@ -7,6 +7,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+# Без них сервис не запустится.
+REQUIRED_VARS = ("HH_LOGIN_EMAIL", "HH_RESUME_IDS", "IMAP_PASSWORD")
+# Без них сервис работает, но без уведомлений и команд в Telegram.
+OPTIONAL_VARS = ("TG_BOT_TOKEN", "TG_CHAT_ID")
+
+
+def missing_vars(env: dict[str, str] | None = None) -> tuple[list[str], list[str]]:
+    """Имена незаданных переменных: (обязательные, необязательные). Значения не раскрываются."""
+    env = os.environ if env is None else env
+    return ([n for n in REQUIRED_VARS if not (env.get(n) or "").strip()],
+            [n for n in OPTIONAL_VARS if not (env.get(n) or "").strip()])
+
+
 def _env(name: str, default: str | None = None, required: bool = False) -> str:
     value = os.getenv(name, default)
     if required and not value:
@@ -63,6 +76,9 @@ class Config:
 
 
 def load() -> Config:
+    required, _ = missing_vars()
+    if required:
+        raise RuntimeError(f"Не заданы обязательные переменные окружения: {', '.join(required)}")
     email = _env("HH_LOGIN_EMAIL", required=True)
     resume_ids = [r.strip() for r in _env("HH_RESUME_IDS", "").split(",") if r.strip()]
     return Config(

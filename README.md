@@ -113,7 +113,8 @@ docker compose build
 docker compose run --rm hh-autoraise check
 ```
 
-Ожидается `IMAP: OK`, `Telegram: отправлено тестовое сообщение`.
+Ожидается `Переменные: OK`, `IMAP: OK`, `Telegram: отправлено тестовое сообщение`.
+Если переменных не хватает, `check` (и любая другая команда) выведет их имена — без значений.
 
 Первый проход вручную (вход по коду + поднятие):
 
@@ -201,6 +202,10 @@ DATA_DIR=./data HEADLESS=0 venv/bin/python -m app.main once
 ```bash
 venv/bin/python -m pytest -q tests
 ```
+
+`tests/test_env.py` проверяет, что `.env.example` описывает все переменные из
+`app/config.py`, а в `.env` заданы обязательные (`HH_LOGIN_EMAIL`, `HH_RESUME_IDS`,
+`IMAP_PASSWORD`); при ошибке выводит только имена недостающих. Без `.env` тест пропускается.
 
 ## Структура
 
