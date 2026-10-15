@@ -65,7 +65,8 @@
 Пошагово: **[docs/telegram-setup.md](docs/telegram-setup.md)**.
 Кратко: бот через [@BotFather](https://t.me/BotFather) → `TG_BOT_TOKEN`;
 написать боту и взять chat_id из `getUpdates` → `TG_CHAT_ID`.
-Бот также принимает команды `/resume` (снять стоп) и `/help` — только из вашего чата.
+Бот также принимает команды `/next` (когда следующее поднятие), `/resume` (снять стоп)
+и `/help` — только из вашего чата.
 
 ## Конфигурация (`.env`)
 
@@ -209,7 +210,7 @@ app/
   hh.py        Playwright: проверка сессии, вход по коду, поднятие резюме
   mail.py      IMAP: ожидание письма hh.ru и извлечение кода
   schedule.py  разбор «можно … в HH:MM», расчёт следующего запуска
-  notify.py    Telegram: уведомления и команды (/resume)
+  notify.py    Telegram: уведомления и команды (/next, /resume, /help)
   main.py      точка входа: run | once | check | resume
 docs/
   gmail-setup.md     настройка Gmail (пароль приложения, IMAP)

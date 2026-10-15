@@ -5,6 +5,7 @@ from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
 
 from app.mail import extract_code, message_text
+from app.main import _fmt_delta, _fmt_dt
 from app.notify import CommandListener, Notifier
 from app.schedule import next_run, parse_available_at
 
@@ -111,3 +112,11 @@ def test_unknown_command_lists_commands():
     listener.handle({"chat": {"id": 111}, "text": "привет"})
     assert calls == []
     assert notifier.sent == ["Команды: /resume"]
+
+
+def test_fmt_next_run():
+    assert _fmt_dt(NOW) == "15.10 20:30"
+    assert _fmt_dt(NOW.isoformat()) == "15.10 20:30"
+    assert _fmt_dt(None) == "—"
+    assert _fmt_delta(timedelta(hours=4, minutes=55, seconds=30)) == "4 ч 55 мин"
+    assert _fmt_delta(timedelta(minutes=7)) == "7 мин"

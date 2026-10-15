@@ -26,6 +26,7 @@ from .schedule import next_run
 log = logging.getLogger("hh-autoraise")
 
 TG_HELP = """Команды:
+/next — когда следующее плановое поднятие, итог последнего прохода.
 /resume — снять стоп и сразу запустить проход (нужна только после «⛔» ниже).
 /help — это сообщение.
 
@@ -78,6 +79,19 @@ def _save_state(cfg, state: dict) -> None:
     cfg.state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _fmt_dt(value: datetime | str | None) -> str:
+    if not value:
+        return "—"
+    dt = datetime.fromisoformat(value) if isinstance(value, str) else value
+    return dt.strftime("%d.%m %H:%M")
+
+
+def _fmt_delta(delta: timedelta) -> str:
+    minutes = max(0, int(delta.total_seconds() // 60))
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} ч {minutes} мин" if hours else f"{minutes} мин"
+
+
 def _logins_today(state: dict, now: datetime) -> int:
     day = now.date().isoformat()
     return sum(1 for t in state.get("logins", []) if t.startswith(day))
@@ -115,6 +129,9 @@ def run_once(cfg, notifier: Notifier) -> datetime:
             log.info("Итог: поднято=%s; %s", result.clicked, "; ".join(result.details) or "—")
             state["last_run"] = now.isoformat()
             state["last_clicked"] = result.clicked
+            state["available_at"] = [d.isoformat() for d in sorted(result.available_at)]
+            if result.clicked:
+                state["last_raised"] = now.isoformat()
             _save_state(cfg, state)
             return next_run(now, result.available_at, cfg.min_interval_minutes,
                             cfg.jitter_min_minutes, cfg.jitter_max_minutes)
@@ -125,6 +142,7 @@ def run_once(cfg, notifier: Notifier) -> datetime:
 def cmd_run(cfg, notifier: Notifier) -> None:
     tz = ZoneInfo(cfg.timezone)
     wake = threading.Event()
+    plan: dict = {"next": None, "running": False}
 
     def tg_resume() -> str:
         if not cfg.stop_flag.exists():
@@ -134,8 +152,31 @@ def cmd_run(cfg, notifier: Notifier) -> None:
         wake.set()
         return f"Стоп снят ({reason}). Запускаю проход."
 
+    def tg_next() -> str:
+        now = datetime.now(tz)
+        state = _load_state(cfg)
+        if cfg.stop_flag.exists():
+            head = (f"⛔ Сервис остановлен ({cfg.stop_flag.read_text(encoding='utf-8').strip()}). "
+                    "Плановых поднятий нет — нужен /resume.")
+        elif plan["running"]:
+            head = "Сейчас идёт проход."
+        elif plan["next"]:
+            head = (f"Следующее плановое поднятие: {_fmt_dt(plan['next'])} "
+                    f"(через {_fmt_delta(plan['next'] - now)}).")
+        else:
+            head = "Следующий запуск ещё не запланирован."
+        lines = [head]
+        if state.get("available_at"):
+            lines.append("hh.ru разрешит поднятие: "
+                         + ", ".join(_fmt_dt(a) for a in state["available_at"]) + ".")
+        lines.append(f"Последний проход: {_fmt_dt(state.get('last_run'))}, "
+                     f"поднято: {state.get('last_clicked', 0)}.")
+        lines.append(f"Последнее поднятие: {_fmt_dt(state.get('last_raised'))}.")
+        return "\n".join(lines)
+
     if notifier.enabled:
-        CommandListener(notifier, {"/resume": tg_resume, "/help": lambda: TG_HELP}).start()
+        CommandListener(notifier, {"/next": tg_next, "/resume": tg_resume,
+                                   "/help": lambda: TG_HELP}).start()
     notifier.send("Сервис запущен.")
     failures = 0
     while True:
@@ -147,6 +188,7 @@ def cmd_run(cfg, notifier: Notifier) -> None:
             if not cfg.stop_flag.exists():
                 failures = 0
             continue
+        plan.update(next=None, running=True)
         try:
             nxt = run_once(cfg, notifier)
             failures = 0
@@ -173,6 +215,7 @@ def cmd_run(cfg, notifier: Notifier) -> None:
             nxt = datetime.now(tz) + timedelta(minutes=min(30 * failures, 240))
 
         wait = max(60.0, (nxt - datetime.now(tz)).total_seconds())
+        plan.update(next=datetime.now(tz) + timedelta(seconds=wait), running=False)
         log.info("Следующий запуск: %s (через %.0f мин)", nxt.strftime("%d.%m %H:%M"), wait / 60)
         wake.wait(wait)
         wake.clear()
