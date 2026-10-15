@@ -50,7 +50,9 @@ def next_run(now: datetime, available: list[datetime], min_interval_min: int,
              jitter_min: int, jitter_max: int, rng: random.Random | None = None) -> datetime:
     """Следующий запуск: ближайшее разрешённое время поднятия + случайная задержка.
 
-    Если время не удалось узнать — через min_interval_min минут.
+    Задержка большая (по умолчанию до 3 ч), чтобы поднятия шли не ровно раз в 4 часа,
+    а в случайный момент через 4–7 часов. Если поднять уже можно, но не вышло —
+    задержка не больше 15 минут. Если время не удалось узнать — через min_interval_min.
     Никогда не раньше чем через 10 минут, чтобы не долбить сайт при сбоях.
     """
     rng = rng or random.Random()
@@ -60,6 +62,7 @@ def next_run(now: datetime, available: list[datetime], min_interval_min: int,
         target = min(future)
     elif available:
         target = now  # уже можно — поднимем после небольшой паузы
+        jitter = min(jitter, timedelta(minutes=15))
     else:
         target = now + timedelta(minutes=min_interval_min)
     return max(target + jitter, now + timedelta(minutes=10))

@@ -36,6 +36,18 @@ def test_next_run_uses_available_time():
     assert NOW + timedelta(hours=3, minutes=3) <= nxt <= NOW + timedelta(hours=3, minutes=15)
 
 
+def test_next_run_window_4_to_7_hours():
+    avail = [NOW + timedelta(hours=4)]
+    for seed in range(50):
+        nxt = next_run(NOW, avail, 240, 5, 180, random.Random(seed))
+        assert NOW + timedelta(hours=4) <= nxt <= NOW + timedelta(hours=7)
+
+
+def test_next_run_already_available_short_delay():
+    nxt = next_run(NOW, [NOW - timedelta(minutes=1)], 240, 5, 180, random.Random(1))
+    assert nxt <= NOW + timedelta(minutes=15)
+
+
 def test_next_run_default_interval():
     nxt = next_run(NOW, [], 240, 3, 15, random.Random(1))
     assert nxt >= NOW + timedelta(hours=4)
