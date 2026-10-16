@@ -64,18 +64,22 @@ dev.hh.ru: «поддержка API для соискателей прекращ
 - `app/schedule.py` — разбор «можно … в HH:MM»; next_run = ближайшее разрешённое время +
   джиттер 5–180 мин (окно 4–7 ч); если уже можно, но не вышло — не позже 15 мин;
   не чаще 10 мин
-- `app/settings.py` — тихие часы: parse/format/in_quiet/apply_quiet (конец окна + 0–45 мин),
-  хранение в `data/settings.json`; по умолчанию выключены
+- `app/settings.py` — тихие часы: parse/format/in_quiet/apply_quiet (конец окна + 0–45 мин);
+  режим уведомлений NOTIFY_MODES (all/normal/errors, по умолчанию normal);
+  хранение в `data/settings.json`; тихие часы по умолчанию выключены
 - `app/main.py` — команды `run | once | check | resume`; лимит входов в день; стоп-флаг
-  `/data/STOPPED` после капчи или 3 ошибок входа; Telegram-команды `/menu` (inline-кнопки:
-  пресеты 23–08/22–09/00–08, «Своё время», «Выключить», «Обновить»), `/next`, `/resume`,
+  `/data/STOPPED` после капчи или 3 ошибок входа; Telegram-команды `/menu` (общее меню:
+  🌙 тихие часы — пресеты/своё время/выключить, 🔔 режим уведомлений, 📄 выгрузка
+  `data/events.log` файлом, 🔄 обновить; подменю с «« Назад»), `/next`, `/resume`,
   `/help` (`TG_HELP`), setMyCommands при старте; смена тихих часов пересчитывает план
   (Event `replan`) без лишнего прохода; `data/state.json`: logins, last_run, last_clicked,
   available_at, last_raised
-- `app/notify.py` — Notifier (send/edit/answer_callback, Reply с markup) + CommandListener
+- Уровни сообщений: status (итог прохода, только «Все статусы»), info, error, reply (ответы,
+  всегда). Журнал: RotatingFileHandler `data/events.log` 1 МБ × 4.
+- `app/notify.py` — Notifier (send с level/edit/answer_callback/send_document, Reply с markup) + CommandListener
   (long polling getUpdates: message + callback_query, только из чата TG_CHAT_ID,
   `awaiting` — ввод своего значения следующим сообщением; старые команды пропускаются)
-- `tests/` — 26 тестов, проходят (test_logic.py, test_env.py)
+- `tests/` — 28 тестов, проходят (test_logic.py, test_env.py)
 - Docker: `python:3.12-slim-bookworm` + `playwright install --with-deps --no-shell chromium`
   (HEADLESS=0 — только из venv). compose: `./data:/data`, `env_file`, `restart: unless-stopped`,
   без `ports`, своя bridge-сеть, `mem_limit: 700m`, `shm_size: 256m`.

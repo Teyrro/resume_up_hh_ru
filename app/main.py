@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import sys
 import threading
 import time
@@ -22,21 +23,22 @@ from . import config as config_mod
 from .hh import CaptchaError, LoginError, is_logged_in, login, open_context, raise_resumes
 from .mail import MailCodeReader
 from . import settings as settings_mod
-from .notify import CommandListener, Notifier, Reply
+from .notify import ERROR, REPLY, STATUS, CommandListener, Notifier, Reply
 from .schedule import next_run
 
 log = logging.getLogger("hh-autoraise")
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 QUIET_PRESETS = ("23-08", "22-09", "00-08")
 TG_COMMANDS = [
-    {"command": "menu", "description": "Настройки: тихие часы"},
+    {"command": "menu", "description": "Меню: тихие часы, уведомления, журнал"},
     {"command": "next", "description": "Когда следующее поднятие"},
     {"command": "resume", "description": "Снять стоп после капчи/ошибок"},
     {"command": "help", "description": "Что значат сообщения бота"},
 ]
 
 TG_HELP = """Команды:
-/menu — настройки: тихие часы (кнопками).
+/menu — меню: состояние, тихие часы, режим уведомлений, выгрузка журнала событий.
 /next — когда следующее плановое поднятие, итог последнего прохода.
 /resume — снять стоп и сразу запустить проход (нужна только после «⛔» ниже).
 /help — это сообщение.
@@ -72,7 +74,13 @@ MAX_LOGINS_PER_DAY входов по коду (по умолчанию 3). Чт�
 (чаще всего hh.ru поменял страницу входа или не приходят письма). \
 Посмотрите data/debug (скриншоты) и логи, устраните причину, затем /resume.
 
-🌙 Тихие часы (/menu) — время суток, когда резюме не поднимаются (например, ночью). \
+🔔 Уведомления (/menu → 🔔): «Все статусы» — ещё и итог каждого прохода с временем \
+следующего запуска; «Важные события» (по умолчанию) — как описано выше; \
+«Только ошибки» — только ⚠️ и ⛔. Ответы на команды приходят всегда.
+
+📄 Журнал (/menu → 📄 Выгрузить события) — файл со всеми событиями сервиса.
+
+🌙 Тихие часы (/menu → 🌙) — время суток, когда резюме не поднимаются (например, ночью). \
 Запуск, выпавший на них, переносится на конец окна + до 45 мин. По умолчанию выключены. \
 Задаются кнопками 23–08 / 22–09 / 00–08 или «Своё время», отключаются кнопкой «Выключить».
 
@@ -107,6 +115,18 @@ def _fmt_delta(delta: timedelta) -> str:
     return f"{hours} ч {minutes} мин" if hours else f"{minutes} мин"
 
 
+def _status_text(cfg, passed: bool, target: datetime, now: datetime) -> str:
+    """Итог прохода для режима уведомлений «Все статусы»."""
+    when = f"{_fmt_dt(target)} (через {_fmt_delta(target - now)})"
+    if not passed:
+        return f"Следующая попытка: {when}."
+    state = _load_state(cfg)
+    text = f"Проход завершён: поднято {state.get('last_clicked', 0)}."
+    if state.get("available_at"):
+        text += " hh.ru разрешит: " + ", ".join(_fmt_dt(a) for a in state["available_at"]) + "."
+    return f"{text} Следующий запуск: {when}."
+
+
 def _logins_today(state: dict, now: datetime) -> int:
     day = now.date().isoformat()
     return sum(1 for t in state.get("logins", []) if t.startswith(day))
@@ -127,13 +147,13 @@ def run_once(cfg, notifier: Notifier) -> datetime:
             if not is_logged_in(page, cfg):
                 if _logins_today(state, now) >= cfg.max_logins_per_day:
                     notifier.send("Сессия слетела, но дневной лимит попыток входа исчерпан. "
-                                  "Повторю завтра.")
+                                  "Повторю завтра.", level=ERROR)
                     tomorrow = (now + timedelta(days=1)).replace(hour=9, minute=0, second=0)
                     return tomorrow
                 state.setdefault("logins", []).append(now.isoformat())
                 state["logins"] = state["logins"][-20:]
                 _save_state(cfg, state)
-                log.info("Сессии нет — выполняю вход по коду из почты")
+                notifier.send("Сессии нет — выполняю вход по коду из почты.", level=STATUS)
                 login(page, cfg, mail)
                 notifier.send("Выполнен повторный вход на hh.ru по коду из почты.")
 
@@ -205,7 +225,25 @@ def cmd_run(cfg, notifier: Notifier) -> None:
             lines.append(quiet_line())
         return "\n".join(lines)
 
-    def menu(toast: str = "", note: str = "") -> Reply:
+    def notify_mode() -> str:
+        return settings_mod.get_notify_mode(cfg.settings_file)
+
+    back = [{"text": "« Назад", "callback_data": "menu:main"}]
+
+    def main_menu(toast: str = "", note: str = "") -> Reply:
+        markup = {"inline_keyboard": [
+            [{"text": "🌙 Тихие часы", "callback_data": "menu:quiet"},
+             {"text": "🔔 Уведомления", "callback_data": "menu:notify"}],
+            [{"text": "📄 Выгрузить события", "callback_data": "menu:export"},
+             {"text": "🔄 Обновить", "callback_data": "menu:refresh"}],
+        ]}
+        text = (f"⚙️ Меню\n\n{next_line()}\n{quiet_line()}\n"
+                f"🔔 Уведомления: {settings_mod.NOTIFY_MODES[notify_mode()]}")
+        if note:
+            text += f"\n\n{note}"
+        return Reply(text, markup, toast)
+
+    def quiet_menu(toast: str = "", note: str = "") -> Reply:
         q = quiet()
         presets = [
             {"text": ("✅ " if settings_mod.parse_quiet(p) == q else "") + p.replace("-", "–"),
@@ -216,12 +254,36 @@ def cmd_run(cfg, notifier: Notifier) -> None:
             presets,
             [{"text": "✏️ Своё время", "callback_data": "quiet:custom"},
              {"text": "🚫 Выключить", "callback_data": "quiet:off"}],
-            [{"text": "🔄 Обновить", "callback_data": "menu:refresh"}],
+            back,
         ]}
-        text = f"Настройки\n\n{quiet_line()}\n{next_line()}"
+        text = (f"🌙 Тихие часы\n\n{quiet_line()}\n{next_line()}\n\n"
+                "Запуск, выпавший на тихие часы, переносится на конец окна + до 45 мин.")
         if note:
             text += f"\n\n{note}"
         return Reply(text, markup, toast)
+
+    def notify_menu(toast: str = "") -> Reply:
+        mode = notify_mode()
+        markup = {"inline_keyboard": [
+            *[[{"text": ("✅ " if key == mode else "") + label, "callback_data": f"notify:{key}"}]
+              for key, label in settings_mod.NOTIFY_MODES.items()],
+            back,
+        ]}
+        text = ("🔔 Уведомления\n\n"
+                "• Все статусы — итог каждого прохода и время следующего запуска, "
+                "а также всё из «Важных событий».\n"
+                "• Важные события — запуск сервиса, вход по коду, поднятия и ошибки (по умолчанию).\n"
+                "• Только ошибки — капча, ошибки входа, остановка сервиса, сбои.\n\n"
+                "Ответы на команды и кнопки приходят всегда; в журнал (📄) пишется всё.")
+        return Reply(text, markup, toast)
+
+    def export_events() -> bool:
+        files = [cfg.events_file.with_name(f"{cfg.events_file.name}.{i}") for i in (3, 2, 1)]
+        data = b"".join(f.read_bytes() for f in [*files, cfg.events_file] if f.exists())
+        if not data:
+            return False
+        name = f"hh-autoraise-events-{datetime.now(tz):%Y%m%d-%H%M}.log"
+        return notifier.send_document(name, data, caption="Журнал событий hh-autoraise")
 
     def change_quiet(q: settings_mod.Quiet | None) -> None:
         settings_mod.set_quiet(cfg.settings_file, q)
@@ -241,30 +303,49 @@ def cmd_run(cfg, notifier: Notifier) -> None:
                 listener.awaiting = custom_quiet
             return "Не понял формат. Пример: 23-08 или 23:30-07:45. Отмена — /menu."
         change_quiet(q)
-        return menu(note=f"✅ Тихие часы: {settings_mod.format_quiet(q)}")
+        return quiet_menu(note=f"✅ Тихие часы: {settings_mod.format_quiet(q)}")
 
     def cb_quiet(arg: str) -> Reply:
         if arg == "custom":
             if listener is not None:
                 listener.awaiting = custom_quiet
-            return menu("Жду время сообщением",
-                        "✏️ Отправьте время сообщением: 23-08 или 23:30-07:45.")
+            return quiet_menu("Жду время сообщением",
+                              "✏️ Отправьте время сообщением: 23-08 или 23:30-07:45.")
         if arg == "off":
             if quiet() is None:
-                return menu("Тихие часы уже выключены")
+                return quiet_menu("Тихие часы уже выключены")
             change_quiet(None)
-            return menu("Тихие часы выключены")
+            return quiet_menu("Тихие часы выключены")
         q = settings_mod.parse_quiet(arg)
         if q is None:
-            return menu("Неизвестное значение")
+            return quiet_menu("Неизвестное значение")
         change_quiet(q)
-        return menu(f"Тихие часы: {settings_mod.format_quiet(q)}")
+        return quiet_menu(f"Тихие часы: {settings_mod.format_quiet(q)}")
+
+    def cb_notify(arg: str) -> Reply:
+        if arg not in settings_mod.NOTIFY_MODES:
+            return notify_menu("Неизвестный режим")
+        settings_mod.set_notify_mode(cfg.settings_file, arg)
+        log.info("Режим уведомлений: %s", settings_mod.NOTIFY_MODES[arg])
+        return notify_menu(f"Уведомления: {settings_mod.NOTIFY_MODES[arg]}")
+
+    def cb_menu(arg: str) -> Reply:
+        if arg == "quiet":
+            return quiet_menu()
+        if arg == "notify":
+            return notify_menu()
+        if arg == "export":
+            if export_events():
+                return main_menu("Журнал отправлен файлом")
+            return main_menu("Не удалось отправить журнал", "⚠️ Журнал пуст или не отправился.")
+        return main_menu("Обновлено" if arg == "refresh" else "")
 
     if notifier.enabled:
         listener = CommandListener(
             notifier,
-            {"/menu": menu, "/next": tg_next, "/resume": tg_resume, "/help": lambda: TG_HELP},
-            {"quiet": cb_quiet, "menu": lambda _arg: menu("Обновлено")},
+            {"/menu": main_menu, "/next": tg_next, "/resume": tg_resume,
+             "/help": lambda: TG_HELP},
+            {"menu": cb_menu, "quiet": cb_quiet, "notify": cb_notify},
         )
         listener.start()
         try:
@@ -285,6 +366,7 @@ def cmd_run(cfg, notifier: Notifier) -> None:
                 failures = 0
             continue
 
+        passed = False
         if settings_mod.in_quiet(datetime.now(tz), quiet()):
             log.info("Тихие часы — проход отложен")
             nxt = datetime.now(tz)
@@ -293,29 +375,31 @@ def cmd_run(cfg, notifier: Notifier) -> None:
             try:
                 nxt = run_once(cfg, notifier)
                 failures = 0
+                passed = True
             except CaptchaError as e:
                 cfg.stop_flag.write_text(f"captcha: {e}", encoding="utf-8")
                 notifier.send("hh.ru показал капчу. Автоподнятие остановлено, чтобы не получить "
                               "блокировку. Войдите на hh вручную с этого IP или подождите сутки, "
                               "затем отправьте боту /resume "
-                              "(или: docker compose run --rm hh-autoraise resume)")
+                              "(или: docker compose run --rm hh-autoraise resume)", level=ERROR)
                 continue
             except LoginError as e:
                 failures += 1
-                notifier.send(f"Ошибка входа: {e}. Отладка сохранена в data/debug.")
+                notifier.send(f"Ошибка входа: {e}. Отладка сохранена в data/debug.", level=ERROR)
                 if failures >= 3:
                     cfg.stop_flag.write_text(f"login: {e}", encoding="utf-8")
                     notifier.send("3 ошибки входа подряд — сервис остановлен. "
-                                  "Нужна проверка (см. data/debug), затем /resume.")
+                                  "Нужна проверка (см. data/debug), затем /resume.", level=ERROR)
                     continue
                 nxt = datetime.now(tz) + timedelta(minutes=60 * failures)
             except Exception as e:
                 failures += 1
                 log.exception("Непредвиденная ошибка")
-                notifier.send(f"Непредвиденная ошибка: {e}")
+                notifier.send(f"Непредвиденная ошибка: {e}", level=ERROR)
                 nxt = datetime.now(tz) + timedelta(minutes=min(30 * failures, 240))
 
         # Ожидание до следующего запуска; смена тихих часов пересчитывает время без прохода.
+        announce = True
         while True:
             # Сигналы, пришедшие во время прохода, уже учтены: настройки читаются заново.
             replan.clear()
@@ -326,6 +410,9 @@ def cmd_run(cfg, notifier: Notifier) -> None:
             plan.update(next=target, running=False)
             log.info("Следующий запуск: %s (через %.0f мин)", target.strftime("%d.%m %H:%M"),
                      wait / 60)
+            if announce:
+                announce = False
+                notifier.send(_status_text(cfg, passed, target, datetime.now(tz)), level=STATUS)
             wake.wait(wait)
             if replan.is_set():
                 continue
@@ -342,7 +429,7 @@ def cmd_check(cfg, notifier: Notifier) -> int:
         ok = False
         print(f"IMAP: ОШИБКА — {e}")
     if notifier.enabled:
-        notifier.send("Проверка связи: Telegram работает.")
+        notifier.send("Проверка связи: Telegram работает.", level=REPLY)
         print("Telegram: отправлено тестовое сообщение")
     else:
         print("Telegram: не настроен (необязательно)")
@@ -357,8 +444,21 @@ def cmd_check(cfg, notifier: Notifier) -> int:
     return 0 if ok else 1
 
 
+def _setup_events_log(cfg) -> None:
+    """Журнал всех событий в data/events.log (с ротацией) — выгружается кнопкой в /menu."""
+    try:
+        cfg.data_dir.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(cfg.events_file, maxBytes=1_000_000, backupCount=3,
+                                      encoding="utf-8")
+    except OSError as e:
+        log.warning("Журнал событий недоступен: %s", e)
+        return
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logging.getLogger().addHandler(handler)
+
+
 def main(argv: list[str]) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     cmd = argv[1] if len(argv) > 1 else "run"
     required, optional = config_mod.missing_vars()
     if required:
@@ -368,7 +468,9 @@ def main(argv: list[str]) -> int:
         print("Переменные: OK" + (f" (не заданы необязательные: {', '.join(optional)})"
                                    if optional else ""))
     cfg = config_mod.load()
-    notifier = Notifier(cfg.tg_bot_token, cfg.tg_chat_id)
+    _setup_events_log(cfg)
+    notifier = Notifier(cfg.tg_bot_token, cfg.tg_chat_id,
+                        mode=lambda: settings_mod.get_notify_mode(cfg.settings_file))
     if cmd == "run":
         cmd_run(cfg, notifier)
         return 0

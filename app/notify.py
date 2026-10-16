@@ -8,6 +8,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -27,11 +28,22 @@ Handler = Callable[[], "str | Reply"]
 Callback = Callable[[str], "str | Reply"]
 TextInput = Callable[[str], "str | Reply"]
 
+# Уровни сообщений и какие из них отправляются в каждом режиме уведомлений.
+# «reply» — ответы на команды и кнопки, отправляются всегда.
+STATUS, INFO, ERROR, REPLY = "status", "info", "error", "reply"
+MODE_LEVELS = {
+    "all": {STATUS, INFO, ERROR, REPLY},
+    "normal": {INFO, ERROR, REPLY},
+    "errors": {ERROR, REPLY},
+}
+
 
 class Notifier:
-    def __init__(self, bot_token: str = "", chat_id: str = "") -> None:
+    def __init__(self, bot_token: str = "", chat_id: str = "",
+                 mode: Callable[[], str] | None = None) -> None:
         self.bot_token = bot_token
         self.chat_id = chat_id
+        self.mode = mode or (lambda: "normal")
 
     @property
     def enabled(self) -> bool:
@@ -47,9 +59,16 @@ class Notifier:
             raise RuntimeError(f"Telegram ответил ошибкой: {body}")
         return body["result"]
 
-    def send(self, text: str, markup: dict | None = None) -> None:
-        log.info("NOTIFY: %s", text)
-        if not self.enabled:
+    def allowed(self, level: str) -> bool:
+        try:
+            mode = self.mode()
+        except Exception:
+            mode = "normal"
+        return level in MODE_LEVELS.get(mode, MODE_LEVELS["normal"])
+
+    def send(self, text: str, markup: dict | None = None, level: str = INFO) -> None:
+        log.info("NOTIFY[%s]: %s", level, text)
+        if not self.enabled or not self.allowed(level):
             return
         params = {
             "chat_id": self.chat_id,
@@ -77,6 +96,32 @@ class Notifier:
         except Exception as e:
             if "message is not modified" not in str(e):
                 log.warning("Не удалось обновить сообщение в Telegram: %s", e)
+
+    def send_document(self, filename: str, content: bytes, caption: str = "") -> bool:
+        """Отправить файл (multipart/form-data, без сторонних библиотек)."""
+        if not self.enabled:
+            return False
+        boundary = uuid.uuid4().hex
+        parts = []
+        for name, value in (("chat_id", str(self.chat_id)), ("caption", caption)):
+            parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
+                         f"{value}\r\n".encode())
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="document"; '
+                     f'filename="{filename}"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n'
+                     .encode() + content + b"\r\n")
+        parts.append(f"--{boundary}--\r\n".encode())
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{self.bot_token}/sendDocument", data=b"".join(parts),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                body = json.loads(resp.read().decode())
+            if not body.get("ok"):
+                raise RuntimeError(body)
+            return True
+        except Exception as e:
+            log.warning("Не удалось отправить файл в Telegram: %s", e)
+            return False
 
     def answer_callback(self, callback_id: str, text: str = "") -> None:
         try:
@@ -152,9 +197,9 @@ class CommandListener(threading.Thread):
 
     def _send(self, reply: str | Reply) -> None:
         if isinstance(reply, Reply):
-            self.notifier.send(reply.text, reply.markup)
+            self.notifier.send(reply.text, reply.markup, level=REPLY)
         else:
-            self.notifier.send(reply)
+            self.notifier.send(reply, level=REPLY)
 
     def handle(self, message: dict) -> None:
         if not self._own_chat(message.get("chat")):
@@ -171,7 +216,7 @@ class CommandListener(threading.Thread):
         command = text.split()[0].split("@")[0].lower()
         handler = self.handlers.get(command)
         if handler is None:
-            self.notifier.send(
+            self._send(
                 "Команды: "
                 + ", ".join(self.handlers)
                 + (" — подробнее /help" if "/help" in self.handlers else "")
@@ -200,4 +245,4 @@ class CommandListener(threading.Thread):
             self.notifier.edit(message["message_id"], reply.text, reply.markup)
         else:
             self.notifier.answer_callback(query["id"])
-            self.notifier.send(reply)
+            self._send(reply)

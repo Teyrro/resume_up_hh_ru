@@ -1,4 +1,4 @@
-"""Настройки, которые меняются из Telegram (/menu), и тихие часы.
+"""Настройки, которые меняются из Telegram (/menu): тихие часы и режим уведомлений.
 
 Хранятся в data/settings.json, чтобы переживать перезапуск контейнера.
 """
@@ -78,11 +78,33 @@ def get_quiet(path: Path) -> Quiet | None:
     return parse_quiet(raw) if raw else None
 
 
-def set_quiet(path: Path, quiet: Quiet | None) -> None:
+def _set(path: Path, key: str, value: object) -> None:
     with _lock:
         data = load(path)
-        data["quiet_hours"] = format_quiet(quiet).replace("–", "-") if quiet else None
+        data[key] = value
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def set_quiet(path: Path, quiet: Quiet | None) -> None:
+    _set(path, "quiet_hours", format_quiet(quiet).replace("–", "-") if quiet else None)
+
+
+# Режимы уведомлений в Telegram: какие уровни сообщений отправлять.
+NOTIFY_MODES = {
+    "all": "Все статусы",
+    "normal": "Важные события",
+    "errors": "Только ошибки",
+}
+DEFAULT_NOTIFY_MODE = "normal"
+
+
+def get_notify_mode(path: Path) -> str:
+    mode = load(path).get("notify_mode")
+    return mode if mode in NOTIFY_MODES else DEFAULT_NOTIFY_MODE
+
+
+def set_notify_mode(path: Path, mode: str) -> None:
+    if mode not in NOTIFY_MODES:
+        raise ValueError(f"Неизвестный режим уведомлений: {mode}")
+    _set(path, "notify_mode", mode)

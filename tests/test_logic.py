@@ -7,7 +7,8 @@ from zoneinfo import ZoneInfo
 from app.mail import extract_code, message_text
 from app.main import _fmt_delta, _fmt_dt
 from app.notify import CommandListener, Notifier, Reply
-from app.settings import apply_quiet, format_quiet, get_quiet, in_quiet, parse_quiet, set_quiet
+from app.settings import (apply_quiet, format_quiet, get_notify_mode, get_quiet, in_quiet,
+                          parse_quiet, set_notify_mode, set_quiet)
 from app.schedule import next_run, parse_available_at
 
 TZ = ZoneInfo("Asia/Novosibirsk")
@@ -83,7 +84,7 @@ class _FakeNotifier(Notifier):
         self.edited: list[tuple[int, str, dict | None]] = []
         self.answered: list[str] = []
 
-    def send(self, text: str, markup: dict | None = None) -> None:
+    def send(self, text: str, markup: dict | None = None, level: str = "info") -> None:
         self.sent.append(text)
 
     def edit(self, message_id: int, text: str, markup: dict | None = None) -> None:
@@ -189,3 +190,23 @@ def test_callback_from_stranger_ignored():
     listener.handle_callback({"id": "1", "data": "quiet:off",
                               "message": {"message_id": 7, "chat": {"id": 222}}})
     assert notifier.edited == []
+
+
+def test_notify_modes_filter_levels(tmp_path):
+    path = tmp_path / "settings.json"
+    assert get_notify_mode(path) == "normal"  # по умолчанию
+    notifier = Notifier("token", "111", mode=lambda: get_notify_mode(path))
+    assert notifier.allowed("info") and notifier.allowed("error") and not notifier.allowed("status")
+    set_notify_mode(path, "all")
+    assert notifier.allowed("status")
+    set_notify_mode(path, "errors")
+    assert notifier.allowed("error") and notifier.allowed("reply")
+    assert not notifier.allowed("info") and not notifier.allowed("status")
+
+
+def test_settings_keep_each_other(tmp_path):
+    path = tmp_path / "settings.json"
+    set_quiet(path, (23 * 60, 8 * 60))
+    set_notify_mode(path, "errors")
+    assert get_quiet(path) == (23 * 60, 8 * 60)
+    assert get_notify_mode(path) == "errors"

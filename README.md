@@ -65,7 +65,8 @@
 Пошагово: **[docs/telegram-setup.md](docs/telegram-setup.md)**.
 Кратко: бот через [@BotFather](https://t.me/BotFather) → `TG_BOT_TOKEN`;
 написать боту и взять chat_id из `getUpdates` → `TG_CHAT_ID`.
-Бот также принимает команды `/menu` (тихие часы кнопками), `/next` (когда следующее
+Бот также принимает команды `/menu` (тихие часы, режим уведомлений, выгрузка журнала
+событий — кнопками), `/next` (когда следующее
 поднятие), `/resume` (снять стоп)
 и `/help` — только из вашего чата.
 
@@ -140,6 +141,8 @@ docker compose logs -f
 |---|---|
 | `data/profile/` | профиль Chromium с сессией hh.ru |
 | `data/state.json` | время последних входов и запусков |
+| `data/settings.json` | настройки из `/menu`: тихие часы, режим уведомлений |
+| `data/events.log` (+ `.1`–`.3`) | журнал всех событий, выгружается из `/menu` |
 | `data/debug/` | скриншоты и HTML при ошибках |
 | `data/STOPPED` | флаг остановки после капчи/ошибок входа |
 
@@ -217,7 +220,7 @@ app/
   mail.py      IMAP: ожидание письма hh.ru и извлечение кода
   schedule.py  разбор «можно … в HH:MM», расчёт следующего запуска
   notify.py    Telegram: уведомления, команды и inline-кнопки
-  settings.py  тихие часы и настройки из /menu (data/settings.json)
+  settings.py  настройки из /menu: тихие часы, режим уведомлений (data/settings.json)
   main.py      точка входа: run | once | check | resume
 docs/
   gmail-setup.md     настройка Gmail (пароль приложения, IMAP)

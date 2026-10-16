@@ -68,6 +68,7 @@ class Config:
     state_file: Path = field(init=False)
     stop_flag: Path = field(init=False)
     settings_file: Path = field(init=False)
+    events_file: Path = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "profile_dir", self.data_dir / "profile")
@@ -75,6 +76,7 @@ class Config:
         object.__setattr__(self, "state_file", self.data_dir / "state.json")
         object.__setattr__(self, "stop_flag", self.data_dir / "STOPPED")
         object.__setattr__(self, "settings_file", self.data_dir / "settings.json")
+        object.__setattr__(self, "events_file", self.data_dir / "events.log")
 
 
 def load() -> Config:
