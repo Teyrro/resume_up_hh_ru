@@ -6,7 +6,8 @@ from zoneinfo import ZoneInfo
 
 from app.mail import extract_code, message_text
 from app.main import _fmt_delta, _fmt_dt
-from app.notify import CommandListener, Notifier
+from app.notify import CommandListener, Notifier, Reply
+from app.settings import apply_quiet, format_quiet, get_quiet, in_quiet, parse_quiet, set_quiet
 from app.schedule import next_run, parse_available_at
 
 TZ = ZoneInfo("Asia/Novosibirsk")
@@ -79,9 +80,17 @@ class _FakeNotifier(Notifier):
     def __init__(self) -> None:
         super().__init__("token", "111")
         self.sent: list[str] = []
+        self.edited: list[tuple[int, str, dict | None]] = []
+        self.answered: list[str] = []
 
-    def send(self, text: str) -> None:
+    def send(self, text: str, markup: dict | None = None) -> None:
         self.sent.append(text)
+
+    def edit(self, message_id: int, text: str, markup: dict | None = None) -> None:
+        self.edited.append((message_id, text, markup))
+
+    def answer_callback(self, callback_id: str, text: str = "") -> None:
+        self.answered.append(text)
 
 
 def _listener(calls: list[str]) -> tuple[CommandListener, _FakeNotifier]:
@@ -120,3 +129,63 @@ def test_fmt_next_run():
     assert _fmt_dt(None) == "—"
     assert _fmt_delta(timedelta(hours=4, minutes=55, seconds=30)) == "4 ч 55 мин"
     assert _fmt_delta(timedelta(minutes=7)) == "7 мин"
+
+
+def test_parse_quiet():
+    assert parse_quiet("23-08") == (23 * 60, 8 * 60)
+    assert parse_quiet(" 23:30 – 7:45 ") == (23 * 60 + 30, 7 * 60 + 45)
+    assert parse_quiet("8-8") is None
+    assert parse_quiet("25-08") is None
+    assert parse_quiet("ночью") is None
+    assert format_quiet((23 * 60, 8 * 60)) == "23:00–08:00"
+
+
+def test_in_quiet_over_midnight():
+    q = (23 * 60, 8 * 60)
+    assert in_quiet(NOW.replace(hour=23, minute=10), q)
+    assert in_quiet(NOW.replace(hour=3), q)
+    assert not in_quiet(NOW.replace(hour=8, minute=0), q)
+    assert not in_quiet(NOW.replace(hour=20), q)
+    assert not in_quiet(NOW.replace(hour=3), None)
+
+
+def test_apply_quiet_moves_to_morning():
+    q = (23 * 60, 8 * 60)
+    night = NOW.replace(hour=23, minute=40)
+    moved = apply_quiet(night, q, random.Random(1))
+    morning = (night + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+    assert morning <= moved <= morning + timedelta(minutes=45)
+    assert apply_quiet(NOW, q) == NOW  # 20:30 — не тихие часы
+
+
+def test_quiet_settings_roundtrip(tmp_path):
+    path = tmp_path / "settings.json"
+    assert get_quiet(path) is None  # по умолчанию выключены
+    set_quiet(path, (22 * 60, 9 * 60))
+    assert get_quiet(path) == (22 * 60, 9 * 60)
+    set_quiet(path, None)
+    assert get_quiet(path) is None
+
+
+def test_callback_edits_menu_and_awaits_text():
+    notifier = _FakeNotifier()
+    got: list[str] = []
+    listener = CommandListener(notifier, {"/menu": lambda: "menu"},
+                               {"quiet": lambda arg: Reply(f"menu {arg}", {"k": 1}, "ok")})
+    listener.handle_callback({"id": "1", "data": "quiet:23-08",
+                              "message": {"message_id": 7, "chat": {"id": 111}}})
+    assert notifier.edited == [(7, "menu 23-08", {"k": 1})]
+    assert notifier.answered == ["ok"]
+
+    listener.awaiting = lambda text: got.append(text) or "saved"
+    listener.handle({"chat": {"id": 111}, "text": "22-09"})
+    assert got == ["22-09"] and notifier.sent == ["saved"]
+    assert listener.awaiting is None
+
+
+def test_callback_from_stranger_ignored():
+    notifier = _FakeNotifier()
+    listener = CommandListener(notifier, {}, {"quiet": lambda arg: Reply("x")})
+    listener.handle_callback({"id": "1", "data": "quiet:off",
+                              "message": {"message_id": 7, "chat": {"id": 222}}})
+    assert notifier.edited == []

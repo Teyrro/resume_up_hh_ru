@@ -12,6 +12,7 @@ import json
 import logging
 import sys
 import threading
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -20,12 +21,22 @@ from playwright.sync_api import sync_playwright
 from . import config as config_mod
 from .hh import CaptchaError, LoginError, is_logged_in, login, open_context, raise_resumes
 from .mail import MailCodeReader
-from .notify import CommandListener, Notifier
+from . import settings as settings_mod
+from .notify import CommandListener, Notifier, Reply
 from .schedule import next_run
 
 log = logging.getLogger("hh-autoraise")
 
+QUIET_PRESETS = ("23-08", "22-09", "00-08")
+TG_COMMANDS = [
+    {"command": "menu", "description": "Настройки: тихие часы"},
+    {"command": "next", "description": "Когда следующее поднятие"},
+    {"command": "resume", "description": "Снять стоп после капчи/ошибок"},
+    {"command": "help", "description": "Что значат сообщения бота"},
+]
+
 TG_HELP = """Команды:
+/menu — настройки: тихие часы (кнопками).
 /next — когда следующее плановое поднятие, итог последнего прохода.
 /resume — снять стоп и сразу запустить проход (нужна только после «⛔» ниже).
 /help — это сообщение.
@@ -60,6 +71,10 @@ MAX_LOGINS_PER_DAY входов по коду (по умолчанию 3). Чт�
 ⛔ «3 ошибки входа подряд — сервис остановлен» — вход стабильно не работает \
 (чаще всего hh.ru поменял страницу входа или не приходят письма). \
 Посмотрите data/debug (скриншоты) и логи, устраните причину, затем /resume.
+
+🌙 Тихие часы (/menu) — время суток, когда резюме не поднимаются (например, ночью). \
+Запуск, выпавший на них, переносится на конец окна + до 45 мин. По умолчанию выключены. \
+Задаются кнопками 23–08 / 22–09 / 00–08 или «Своё время», отключаются кнопкой «Выключить».
 
 Ответы на /resume:
 • «Стоп снят (…). Запускаю проход.» — стоп снят, проход начался сразу;
@@ -141,8 +156,13 @@ def run_once(cfg, notifier: Notifier) -> datetime:
 
 def cmd_run(cfg, notifier: Notifier) -> None:
     tz = ZoneInfo(cfg.timezone)
-    wake = threading.Event()
-    plan: dict = {"next": None, "running": False}
+    wake = threading.Event()    # прервать ожидание: /resume или смена настроек
+    replan = threading.Event()  # только пересчитать время (тихие часы), без прохода
+    plan: dict = {"next": None, "base": None, "running": False}
+    listener: CommandListener | None = None
+
+    def quiet() -> settings_mod.Quiet | None:
+        return settings_mod.get_quiet(cfg.settings_file)
 
     def tg_resume() -> str:
         if not cfg.stop_flag.exists():
@@ -150,75 +170,166 @@ def cmd_run(cfg, notifier: Notifier) -> None:
         reason = cfg.stop_flag.read_text(encoding="utf-8").strip()
         cfg.stop_flag.unlink(missing_ok=True)
         wake.set()
-        return f"Стоп снят ({reason}). Запускаю проход."
+        tail = " (сейчас тихие часы — проход будет после них)" if settings_mod.in_quiet(
+            datetime.now(tz), quiet()) else ""
+        return f"Стоп снят ({reason}). Запускаю проход.{tail}"
+
+    def next_line() -> str:
+        now = datetime.now(tz)
+        if cfg.stop_flag.exists():
+            return (f"⛔ Сервис остановлен ({cfg.stop_flag.read_text(encoding='utf-8').strip()}). "
+                    "Плановых поднятий нет — нужен /resume.")
+        if plan["running"]:
+            return "Сейчас идёт проход."
+        if plan["next"]:
+            return (f"Следующее плановое поднятие: {_fmt_dt(plan['next'])} "
+                    f"(через {_fmt_delta(plan['next'] - now)}).")
+        return "Следующий запуск ещё не запланирован."
+
+    def quiet_line() -> str:
+        q = quiet()
+        if q:
+            return f"🌙 Тихие часы: {settings_mod.format_quiet(q)} — в это время резюме не поднимаются."
+        return "🌙 Тихие часы: выключены — поднятия в любое время суток."
 
     def tg_next() -> str:
-        now = datetime.now(tz)
         state = _load_state(cfg)
-        if cfg.stop_flag.exists():
-            head = (f"⛔ Сервис остановлен ({cfg.stop_flag.read_text(encoding='utf-8').strip()}). "
-                    "Плановых поднятий нет — нужен /resume.")
-        elif plan["running"]:
-            head = "Сейчас идёт проход."
-        elif plan["next"]:
-            head = (f"Следующее плановое поднятие: {_fmt_dt(plan['next'])} "
-                    f"(через {_fmt_delta(plan['next'] - now)}).")
-        else:
-            head = "Следующий запуск ещё не запланирован."
-        lines = [head]
+        lines = [next_line()]
         if state.get("available_at"):
             lines.append("hh.ru разрешит поднятие: "
                          + ", ".join(_fmt_dt(a) for a in state["available_at"]) + ".")
         lines.append(f"Последний проход: {_fmt_dt(state.get('last_run'))}, "
                      f"поднято: {state.get('last_clicked', 0)}.")
         lines.append(f"Последнее поднятие: {_fmt_dt(state.get('last_raised'))}.")
+        if quiet():
+            lines.append(quiet_line())
         return "\n".join(lines)
 
+    def menu(toast: str = "", note: str = "") -> Reply:
+        q = quiet()
+        presets = [
+            {"text": ("✅ " if settings_mod.parse_quiet(p) == q else "") + p.replace("-", "–"),
+             "callback_data": f"quiet:{p}"}
+            for p in QUIET_PRESETS
+        ]
+        markup = {"inline_keyboard": [
+            presets,
+            [{"text": "✏️ Своё время", "callback_data": "quiet:custom"},
+             {"text": "🚫 Выключить", "callback_data": "quiet:off"}],
+            [{"text": "🔄 Обновить", "callback_data": "menu:refresh"}],
+        ]}
+        text = f"Настройки\n\n{quiet_line()}\n{next_line()}"
+        if note:
+            text += f"\n\n{note}"
+        return Reply(text, markup, toast)
+
+    def change_quiet(q: settings_mod.Quiet | None) -> None:
+        settings_mod.set_quiet(cfg.settings_file, q)
+        log.info("Тихие часы: %s", settings_mod.format_quiet(q) if q else "выключены")
+        replan.set()
+        wake.set()
+        # Ответ с меню строится после пересчёта плана основным циклом.
+        for _ in range(20):
+            if not replan.is_set():
+                break
+            time.sleep(0.1)
+
+    def custom_quiet(text: str) -> str | Reply:
+        q = settings_mod.parse_quiet(text)
+        if q is None:
+            if listener is not None:
+                listener.awaiting = custom_quiet
+            return "Не понял формат. Пример: 23-08 или 23:30-07:45. Отмена — /menu."
+        change_quiet(q)
+        return menu(note=f"✅ Тихие часы: {settings_mod.format_quiet(q)}")
+
+    def cb_quiet(arg: str) -> Reply:
+        if arg == "custom":
+            if listener is not None:
+                listener.awaiting = custom_quiet
+            return menu("Жду время сообщением",
+                        "✏️ Отправьте время сообщением: 23-08 или 23:30-07:45.")
+        if arg == "off":
+            if quiet() is None:
+                return menu("Тихие часы уже выключены")
+            change_quiet(None)
+            return menu("Тихие часы выключены")
+        q = settings_mod.parse_quiet(arg)
+        if q is None:
+            return menu("Неизвестное значение")
+        change_quiet(q)
+        return menu(f"Тихие часы: {settings_mod.format_quiet(q)}")
+
     if notifier.enabled:
-        CommandListener(notifier, {"/next": tg_next, "/resume": tg_resume,
-                                   "/help": lambda: TG_HELP}).start()
+        listener = CommandListener(
+            notifier,
+            {"/menu": menu, "/next": tg_next, "/resume": tg_resume, "/help": lambda: TG_HELP},
+            {"quiet": cb_quiet, "menu": lambda _arg: menu("Обновлено")},
+        )
+        listener.start()
+        try:
+            notifier.api("setMyCommands", {"commands": json.dumps(TG_COMMANDS, ensure_ascii=False)})
+        except Exception as e:
+            log.warning("Telegram setMyCommands: %s", e)
     notifier.send("Сервис запущен.")
     failures = 0
     while True:
         if cfg.stop_flag.exists():
+            plan.update(next=None, running=False)
             log.error("Сервис остановлен (%s). Разберитесь и выполните команду resume.",
                       cfg.stop_flag.read_text(encoding="utf-8").strip())
             wake.wait(3600)
             wake.clear()
+            replan.clear()
             if not cfg.stop_flag.exists():
                 failures = 0
             continue
-        plan.update(next=None, running=True)
-        try:
-            nxt = run_once(cfg, notifier)
-            failures = 0
-        except CaptchaError as e:
-            cfg.stop_flag.write_text(f"captcha: {e}", encoding="utf-8")
-            notifier.send("hh.ru показал капчу. Автоподнятие остановлено, чтобы не получить "
-                          "блокировку. Войдите на hh вручную с этого IP или подождите сутки, "
-                          "затем отправьте боту /resume "
-                          "(или: docker compose run --rm hh-autoraise resume)")
-            continue
-        except LoginError as e:
-            failures += 1
-            notifier.send(f"Ошибка входа: {e}. Отладка сохранена в data/debug.")
-            if failures >= 3:
-                cfg.stop_flag.write_text(f"login: {e}", encoding="utf-8")
-                notifier.send("3 ошибки входа подряд — сервис остановлен. "
-                              "Нужна проверка (см. data/debug), затем /resume.")
-                continue
-            nxt = datetime.now(tz) + timedelta(minutes=60 * failures)
-        except Exception as e:
-            failures += 1
-            log.exception("Непредвиденная ошибка")
-            notifier.send(f"Непредвиденная ошибка: {e}")
-            nxt = datetime.now(tz) + timedelta(minutes=min(30 * failures, 240))
 
-        wait = max(60.0, (nxt - datetime.now(tz)).total_seconds())
-        plan.update(next=datetime.now(tz) + timedelta(seconds=wait), running=False)
-        log.info("Следующий запуск: %s (через %.0f мин)", nxt.strftime("%d.%m %H:%M"), wait / 60)
-        wake.wait(wait)
-        wake.clear()
+        if settings_mod.in_quiet(datetime.now(tz), quiet()):
+            log.info("Тихие часы — проход отложен")
+            nxt = datetime.now(tz)
+        else:
+            plan.update(next=None, running=True)
+            try:
+                nxt = run_once(cfg, notifier)
+                failures = 0
+            except CaptchaError as e:
+                cfg.stop_flag.write_text(f"captcha: {e}", encoding="utf-8")
+                notifier.send("hh.ru показал капчу. Автоподнятие остановлено, чтобы не получить "
+                              "блокировку. Войдите на hh вручную с этого IP или подождите сутки, "
+                              "затем отправьте боту /resume "
+                              "(или: docker compose run --rm hh-autoraise resume)")
+                continue
+            except LoginError as e:
+                failures += 1
+                notifier.send(f"Ошибка входа: {e}. Отладка сохранена в data/debug.")
+                if failures >= 3:
+                    cfg.stop_flag.write_text(f"login: {e}", encoding="utf-8")
+                    notifier.send("3 ошибки входа подряд — сервис остановлен. "
+                                  "Нужна проверка (см. data/debug), затем /resume.")
+                    continue
+                nxt = datetime.now(tz) + timedelta(minutes=60 * failures)
+            except Exception as e:
+                failures += 1
+                log.exception("Непредвиденная ошибка")
+                notifier.send(f"Непредвиденная ошибка: {e}")
+                nxt = datetime.now(tz) + timedelta(minutes=min(30 * failures, 240))
+
+        # Ожидание до следующего запуска; смена тихих часов пересчитывает время без прохода.
+        while True:
+            # Сигналы, пришедшие во время прохода, уже учтены: настройки читаются заново.
+            replan.clear()
+            wake.clear()
+            target = settings_mod.apply_quiet(nxt, quiet())
+            wait = max(60.0, (target - datetime.now(tz)).total_seconds())
+            target = datetime.now(tz) + timedelta(seconds=wait)
+            plan.update(next=target, running=False)
+            log.info("Следующий запуск: %s (через %.0f мин)", target.strftime("%d.%m %H:%M"),
+                     wait / 60)
+            wake.wait(wait)
+            if replan.is_set():
+                continue
+            break
 
 
 def cmd_check(cfg, notifier: Notifier) -> int:

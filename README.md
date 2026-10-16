@@ -31,7 +31,7 @@
 | Telegram-бот (необязательно) | уведомления |
 | Python 3.12 (только для локального запуска без Docker) | разработка/отладка |
 
-Сервер: любой Linux с Docker, ~1.5 ГБ на диске (образ ~1.3 ГБ), до 700 МБ RAM во время
+Сервер: любой Linux с Docker, ~2 ГБ на диске (образ ~1.2–1.7 ГБ), до 700 МБ RAM во время
 прохода (лимит `mem_limit` в `docker-compose.yml`; в простое ~110 МБ), исходящий доступ к
 `hh.ru`, `imap.gmail.com:993`, `api.telegram.org`. Входящие порты не нужны.
 
@@ -65,7 +65,8 @@
 Пошагово: **[docs/telegram-setup.md](docs/telegram-setup.md)**.
 Кратко: бот через [@BotFather](https://t.me/BotFather) → `TG_BOT_TOKEN`;
 написать боту и взять chat_id из `getUpdates` → `TG_CHAT_ID`.
-Бот также принимает команды `/next` (когда следующее поднятие), `/resume` (снять стоп)
+Бот также принимает команды `/menu` (тихие часы кнопками), `/next` (когда следующее
+поднятие), `/resume` (снять стоп)
 и `/help` — только из вашего чата.
 
 ## Конфигурация (`.env`)
@@ -215,7 +216,8 @@ app/
   hh.py        Playwright: проверка сессии, вход по коду, поднятие резюме
   mail.py      IMAP: ожидание письма hh.ru и извлечение кода
   schedule.py  разбор «можно … в HH:MM», расчёт следующего запуска
-  notify.py    Telegram: уведомления и команды (/next, /resume, /help)
+  notify.py    Telegram: уведомления, команды и inline-кнопки
+  settings.py  тихие часы и настройки из /menu (data/settings.json)
   main.py      точка входа: run | once | check | resume
 docs/
   gmail-setup.md     настройка Gmail (пароль приложения, IMAP)

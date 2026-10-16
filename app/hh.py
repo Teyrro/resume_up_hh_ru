@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import math
 import random
 import re
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,10 +22,11 @@ from .schedule import parse_available_at
 
 log = logging.getLogger(__name__)
 
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-)
+# Полный Chromium в новом headless-режиме: настоящие плагины, userAgentData и Client Hints.
+BROWSER_CHANNEL = "chromium"
+# Экран и окно как у развёрнутого браузера на типичном ноутбуке (1920x1080 при масштабе 125%).
+SCREEN = {"width": 1536, "height": 864}
+VIEWPORT = {"width": 1536, "height": 730}
 
 _CAPTCHA_MARKERS = re.compile(
     r"captcha|капч|не робот|подтвердите, что вы человек|smart-?captcha", re.IGNORECASE
@@ -56,17 +59,147 @@ def _pause(a: float = 0.6, b: float = 1.8) -> None:
     time.sleep(random.uniform(a, b))
 
 
+def browser_user_agent(executable: str) -> str:
+    """User-agent настоящей версии Chromium, но без «HeadlessChrome».
+
+    Версия берётся из самого браузера, поэтому UA всегда совпадает с движком,
+    navigator.userAgentData и заголовками Sec-CH-UA (их Chromium формирует сам).
+    """
+    out = subprocess.run(
+        [executable, "--version"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    ).stdout
+    m = re.search(r"(\d+)\.\d+\.\d+\.\d+", out)
+    if not m:
+        raise RuntimeError(f"Не удалось узнать версию Chromium: {out!r}")
+    return (
+        f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+        f"Chrome/{m[1]}.0.0.0 Safari/537.36"
+    )
+
+
 def open_context(pw: Playwright, cfg: Config) -> BrowserContext:
     cfg.profile_dir.mkdir(parents=True, exist_ok=True)
     return pw.chromium.launch_persistent_context(
         user_data_dir=str(cfg.profile_dir),
+        channel=BROWSER_CHANNEL,
         headless=cfg.headless,
         locale="ru-RU",
         timezone_id=cfg.timezone,
-        user_agent=USER_AGENT,
-        viewport={"width": 1366, "height": 860},
+        user_agent=browser_user_agent(pw.chromium.executable_path),
+        screen=SCREEN,
+        viewport=VIEWPORT,
         args=["--disable-blink-features=AutomationControlled"],
     )
+
+
+# --- «Человеческая» механика: мышь по кривой, прокрутка колесом, неровный набор. ---
+
+_mouse_pos: dict[int, tuple[float, float]] = {}
+
+
+def _move_mouse(page: Page, x: float, y: float) -> None:
+    """Плавное движение по кривой Безье с неравномерной скоростью."""
+    sx, sy = _mouse_pos.get(id(page)) or (
+        random.uniform(0.2, 0.8) * VIEWPORT["width"],
+        random.uniform(0.1, 0.5) * VIEWPORT["height"],
+    )
+    dist = math.hypot(x - sx, y - sy)
+    # Контрольная точка в стороне от прямой — траектория получается дугой.
+    cx = (sx + x) / 2 + random.uniform(-0.25, 0.25) * dist
+    cy = (sy + y) / 2 + random.uniform(-0.25, 0.25) * dist
+    steps = max(8, min(45, int(dist / random.uniform(12, 22))))
+    for i in range(1, steps + 1):
+        t = i / steps
+        t = t * t * (3 - 2 * t)  # разгон и торможение
+        px = (1 - t) ** 2 * sx + 2 * (1 - t) * t * cx + t * t * x
+        py = (1 - t) ** 2 * sy + 2 * (1 - t) * t * cy + t * t * y
+        page.mouse.move(px, py)
+        time.sleep(random.uniform(0.004, 0.018))
+    _mouse_pos[id(page)] = (x, y)
+
+
+def _scroll_to(page: Page, loc: Locator) -> dict | None:
+    """Прокрутить колесом мыши, пока элемент не окажется в видимой части окна."""
+    for _ in range(25):
+        box = loc.bounding_box()
+        if box is None:
+            return None
+        top, bottom = 90, VIEWPORT["height"] - 90
+        if top <= box["y"] and box["y"] + box["height"] <= bottom:
+            return box
+        delta = box["y"] - VIEWPORT["height"] * random.uniform(0.35, 0.55)
+        step = math.copysign(min(abs(delta), random.uniform(180, 420)), delta)
+        page.mouse.wheel(0, step)
+        time.sleep(random.uniform(0.12, 0.35))
+    return loc.bounding_box()
+
+
+def _human_click(page: Page, loc: Locator) -> None:
+    """Довести мышь до случайной точки на элементе и нажать; иначе — обычный click()."""
+    try:
+        box = _scroll_to(page, loc)
+        if box and box["width"] > 2 and box["height"] > 2:
+            x = box["x"] + box["width"] * random.uniform(0.3, 0.7)
+            y = box["y"] + box["height"] * random.uniform(0.3, 0.7)
+            # Кликаем «по-человечески», только если в этой точке действительно наш элемент.
+            if loc.evaluate(
+                "(el, [x, y]) => el.contains(document.elementFromPoint(x, y))", [x, y]
+            ):
+                _move_mouse(page, x, y)
+                time.sleep(random.uniform(0.08, 0.3))
+                page.mouse.down()
+                time.sleep(random.uniform(0.05, 0.14))
+                page.mouse.up()
+                return
+    except Exception as e:
+        log.debug("Человеческий клик не удался, обычный click(): %s", e)
+    loc.click()
+
+
+def _human_type(page: Page, text: str) -> None:
+    """Набор с неравномерными паузами между символами и редкими «задумчивыми» остановками."""
+    for ch in text:
+        page.keyboard.type(ch)
+        time.sleep(random.uniform(0.06, 0.22))
+        if random.random() < 0.08:
+            time.sleep(random.uniform(0.3, 0.9))
+
+
+def _look_around(page: Page) -> None:
+    """Немного полистать страницу, как человек, который её читает."""
+    for _ in range(random.randint(1, 3)):
+        page.mouse.wheel(0, random.uniform(150, 450))
+        time.sleep(random.uniform(0.4, 1.2))
+    if random.random() < 0.6:
+        page.mouse.wheel(0, -random.uniform(200, 600))
+        time.sleep(random.uniform(0.3, 0.8))
+
+
+def _open_my_resumes(page: Page, cfg: Config) -> None:
+    """Иногда заходить через главную, как человек; иначе — сразу на «Мои резюме»."""
+    url = f"{cfg.hh_base_url}/applicant/my_resumes"
+    if random.random() < 0.4:
+        page.goto(f"{cfg.hh_base_url}/", wait_until="domcontentloaded")
+        _pause(1.5, 3.5)
+        _look_around(page)
+        link = page.locator("a[href*='/applicant/my_resumes']")
+        visible = [
+            link.nth(i) for i in range(min(link.count(), 5)) if link.nth(i).is_visible()
+        ]
+        if visible:
+            _human_click(page, visible[0])
+            try:
+                page.wait_for_url("**/applicant/my_resumes**", timeout=15000)
+                return
+            except PWTimeout:
+                pass
+        page.goto(url, wait_until="domcontentloaded", referer=f"{cfg.hh_base_url}/")
+        return
+    page.goto(url, wait_until="domcontentloaded")
 
 
 def dump_debug(page: Page, cfg: Config, tag: str) -> Path | None:
@@ -127,7 +260,7 @@ def _click_button_by_text(page: Page, names: list[str], timeout_ms: int = 6000) 
                     item = loc.nth(i)
                     try:
                         if item.is_visible() and item.is_enabled():
-                            item.click()
+                            _human_click(page, item)
                             return True
                     except Exception:
                         continue
@@ -136,7 +269,7 @@ def _click_button_by_text(page: Page, names: list[str], timeout_ms: int = 6000) 
 
 
 def is_logged_in(page: Page, cfg: Config) -> bool:
-    page.goto(f"{cfg.hh_base_url}/applicant/my_resumes", wait_until="domcontentloaded")
+    _open_my_resumes(page, cfg)
     _pause(1.5, 2.5)
     if "/account/login" in page.url or "/account/signup" in page.url:
         return False
@@ -164,7 +297,7 @@ def login(page: Page, cfg: Config, mail: MailCodeReader) -> None:
         _pause()
         submit = page.locator("[data-qa='submit-button']")
         if submit.count() and submit.first.is_visible():
-            submit.first.click()
+            _human_click(page, submit.first)
             _pause(1.5, 2.5)
 
     # Шаг 1: вкладка «Почта» (по умолчанию открыт «Телефон»).
@@ -174,7 +307,7 @@ def login(page: Page, cfg: Config, mail: MailCodeReader) -> None:
     except PWTimeout:
         loc = page.get_by_text("Почта", exact=True)
         if loc.count():
-            loc.first.click()
+            _human_click(page, loc.first)
     _pause()
 
     email_input = _first_visible(
@@ -193,15 +326,15 @@ def login(page: Page, cfg: Config, mail: MailCodeReader) -> None:
     if email_input is None:
         dump_debug(page, cfg, "no-email-input")
         raise LoginError("Не нашёл поле для почты на странице входа")
-    email_input.click()
+    _human_click(page, email_input)
     email_input.fill("")
-    email_input.type(cfg.hh_login_email, delay=random.randint(40, 110))
+    _human_type(page, cfg.hh_login_email)
     _pause()
 
     requested_at = datetime.now(ZoneInfo(cfg.timezone))
     submit = page.locator("[data-qa='submit-button']")
     if submit.count() and submit.first.is_visible():
-        submit.first.click()  # «Дальше»
+        _human_click(page, submit.first)  # «Дальше»
     elif not _click_button_by_text(page, ["Дальше", "Получить код", "Продолжить"]):
         email_input.press("Enter")
     _pause(2, 3.5)
@@ -230,15 +363,13 @@ def login(page: Page, cfg: Config, mail: MailCodeReader) -> None:
         dump_debug(page, cfg, "no-code-email")
         raise LoginError("Письмо с кодом не пришло вовремя")
 
-    code_input.click()
+    _human_click(page, code_input)
     single_digit = page.locator(
         "input[maxlength='1'][inputmode='numeric'], input[maxlength='1']"
     )
-    if single_digit.count() >= len(code):
-        page.keyboard.type(code, delay=random.randint(80, 160))
-    else:
+    if single_digit.count() < len(code):
         code_input.fill("")
-        code_input.type(code, delay=random.randint(80, 160))
+    _human_type(page, code)
     _pause(1, 2)
     _click_button_by_text(
         page, ["Войти", "Подтвердить", "Дальше", "Продолжить"], timeout_ms=3000
@@ -274,9 +405,12 @@ def _touch_via_http(page: Page, cfg: Config, resume_id: str) -> bool:
 
 def raise_resumes(page: Page, cfg: Config) -> RaiseResult:
     tz = ZoneInfo(cfg.timezone)
-    page.goto(f"{cfg.hh_base_url}/applicant/my_resumes", wait_until="domcontentloaded")
+    # Обычно страница уже открыта проверкой сессии — человек не стал бы её перезагружать.
+    if "/applicant/my_resumes" not in page.url:
+        _open_my_resumes(page, cfg)
     _pause(2, 3.5)
     _check_captcha(page)
+    _look_around(page)
 
     clicked = 0
     details: list[str] = []
@@ -289,9 +423,8 @@ def raise_resumes(page: Page, cfg: Config) -> RaiseResult:
             if "resume-update-button_actions" in (btn.get_attribute("data-qa") or ""):
                 continue
             if btn.is_visible() and btn.is_enabled():
-                btn.scroll_into_view_if_needed()
                 _pause()
-                btn.click()
+                _human_click(page, btn)
                 clicked += 1
                 details.append(f"нажата кнопка «{btn.inner_text().strip()}»")
                 _pause(2, 4)
@@ -312,6 +445,8 @@ def raise_resumes(page: Page, cfg: Config) -> RaiseResult:
 
     # Если кнопок не нашли, но hh пишет, что время уже наступило — пробуем запасной путь.
     if clicked == 0 and cfg.resume_ids and (not available or min(available) <= now):
+        # Сохраняем страницу, чтобы по HTML поправить поиск кнопки (_RAISE_BUTTON).
+        dump_debug(page, cfg, "raise-no-button")
         for rid in cfg.resume_ids:
             if _touch_via_http(page, cfg, rid):
                 clicked += 1

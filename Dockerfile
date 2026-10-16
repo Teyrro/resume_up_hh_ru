@@ -1,5 +1,5 @@
-# Лёгкий образ: только headless-сборка Chromium (без Firefox/WebKit и окна браузера).
-# Сервис всегда работает с HEADLESS=1; для отладки с окном — локальный venv, см. README.
+# Полный Chromium (без Firefox/WebKit) в новом headless-режиме: в отличие от облегчённой
+# headless-сборки у него настоящие плагины, navigator.userAgentData и заголовки Sec-CH-UA.
 FROM python:3.12-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
@@ -11,7 +11,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
-    && playwright install --with-deps --only-shell chromium \
+    && playwright install --with-deps --no-shell chromium \
     && rm -rf /var/lib/apt/lists/* /root/.cache
 
 COPY app ./app
