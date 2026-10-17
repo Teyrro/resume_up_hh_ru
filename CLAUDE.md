@@ -17,9 +17,9 @@ dev.hh.ru: «поддержка API для соискателей прекращ
 - Аккаунт hh: соискатель, вход по email с кодом; два резюме.
 - Часовой пояс: Asia/Novosibirsk. Лимит hh: ручное поднятие не чаще раза в 4 часа.
 - GitHub: `https://github.com/Teyrro/resume_up_hh_ru` (публичный, remote `origin`, ветка `master`).
-  Пуш из WSL пока не работает: `gh` установлен в `~/.local/bin`, но пользователь не вошёл
-  (`gh auth login`). История переписана без личных данных — нужен `git push --force`;
-  на сервер коммиты доставляются через `git bundle`.
+  Пуш из WSL работает (`git push origin master`, credential.helper — Windows GCM);
+  force-push запрещён правами Claude Code. История переписана без личных данных и запушена.
+  Модель распространения: каждый пользователь запускает свою копию (не сервис за других).
 
 ## Сервер
 - `ssh vpn` (адрес — в `CLAUDE.local.md`), 2 ГБ RAM, 30 ГБ диск.
@@ -82,8 +82,16 @@ dev.hh.ru: «поддержка API для соискателей прекращ
 - `tests/` — 28 тестов, проходят (test_logic.py, test_env.py)
 - Docker: `python:3.12-slim-bookworm` + `playwright install --with-deps --no-shell chromium`
   (HEADLESS=0 — только из venv). compose: `./data:/data`, `env_file`, `restart: unless-stopped`,
-  без `ports`, своя bridge-сеть, `mem_limit: 700m`, `shm_size: 256m`.
-- Документация: `README.md`, `docs/gmail-setup.md`, `docs/telegram-setup.md`.
+  без `ports`, своя bridge-сеть, `mem_limit: 700m`, `shm_size: 256m`, TZ — `${TZ:-Asia/Novosibirsk}`
+  из файла переменных. Образ `ghcr.io/teyrro/resume_up_hh_ru:latest` (+ `build: .`).
+- CI: `.github/workflows/docker.yml` — pytest, затем сборка amd64+arm64 и пуш в GHCR
+  при пуше в master (кроме *.md/docs) и тегах v*. Пакет в GHCR должен быть публичным.
+- `install.sh` — `curl … | bash`: качает docker-compose.yml, .env.example, setup.sh в
+  ~/hh-autoraise и запускает мастер. `setup.sh` — мастер: Docker (установка через
+  get.docker.com), вопросы, hash из ссылок, getMe + автоопределение chat_id, TZ, запись
+  файла переменных (600), pull/build, check, up -d. `HH_SETUP_ENV_FILE` — путь для тестов.
+- Документация: `README.md` (раздел «Быстрый старт»), `docs/quickstart.md` (для новичков),
+  `docs/gmail-setup.md`, `docs/telegram-setup.md`.
 
 ## Переменные окружения (.env)
 ```
@@ -102,9 +110,10 @@ JITTER_MAX_MINUTES=180, MAX_LOGINS_PER_DAY=3, HEADLESS=1.
 
 ## Что осталось
 1. Поправить `_RAISE_BUTTON` по `data/debug/*-raise-no-button.html` с сервера.
-2. Пуш на GitHub: обычный push разрешён, force — нет. Пользователь пересоздаёт
-   репозиторий (или сам делает `git push --force-with-lease`), затем `git push origin master`.
-3. Пользователю отозвать доступы старого hh-agent: Gmail OAuth
+2. Повтор при таймауте загрузки страницы и уведомление «Непредвиденная ошибка» только
+   при повторном сбое; логировать тело ответа Telegram при 400 (editMessageText).
+3. Сервер: перейти с git bundle на `git pull` из GitHub и `docker compose pull`.
+4. Пользователю отозвать доступы старого hh-agent: Gmail OAuth
    (myaccount.google.com/permissions) и устройство ChatGPT/Codex.
-4. Идеи (не согласованы): уведомлять, если поднять было можно, но не вышло; подробности
+5. Идеи (не согласованы): уведомлять, если поднять было можно, но не вышло; подробности
    в сообщении «Поднято резюме».
