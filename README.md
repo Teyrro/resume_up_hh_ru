@@ -11,6 +11,23 @@
 > API hh.ru для соискателей закрыт с 15.12.2025, поэтому используется браузерная
 > автоматизация (Playwright + Chromium). Платное «Поднять автоматически» не нажимается.
 
+## Быстрый старт
+
+Нужны: Linux-сервер или ПК с постоянной работой, Gmail с
+[паролем приложения](docs/gmail-setup.md), по желанию — Telegram-бот от
+[@BotFather](https://t.me/BotFather). Дальше — одна команда:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Teyrro/resume_up_hh_ru/master/install.sh | bash
+```
+
+Мастер настройки поставит Docker (если нужно), спросит email, ссылки на резюме, пароль
+приложения и токен бота (`chat_id` найдёт сам), скачает готовый образ, проверит всё и
+запустит сервис. Пошагово для новичков: **[docs/quickstart.md](docs/quickstart.md)**.
+
+Каждый запускает свою копию со своими доступами — не запускайте сервис за других людей
+с одного сервера (аккаунты будут связаны по IP и отпечатку браузера).
+
 ## Как это работает
 
 1. Открывает `https://hh.ru/applicant/my_resumes` в сохранённом профиле браузера.
@@ -102,12 +119,19 @@ chmod 600 .env
 
 ## Развёртывание на сервере (Docker)
 
+Проще всего — [быстрый старт](#быстрый-старт) (`install.sh` + мастер `setup.sh`).
+Вручную, из исходников:
+
 ```bash
-git clone git@github.com:Teyrro/hh-autoraise.git
+git clone https://github.com/Teyrro/resume_up_hh_ru.git hh-autoraise
 cd hh-autoraise
-cp .env.example .env && nano .env && chmod 600 .env
-docker compose build
+./setup.sh                      # или: cp .env.example .env && nano .env && chmod 600 .env
+docker compose pull             # готовый образ ghcr.io/teyrro/resume_up_hh_ru:latest
+# docker compose build          # либо собрать самому из исходников
 ```
+
+Образ собирается GitHub Actions (`.github/workflows/docker.yml`) при каждом пуше в
+`master` — для `linux/amd64` и `linux/arm64`, после прохождения тестов.
 
 Проверка настроек (IMAP, Telegram, наличие сессии hh.ru; код входа **не** запрашивает):
 
@@ -162,9 +186,8 @@ docker compose logs -f
 Обновление:
 
 ```bash
-git pull
-docker compose build
-docker compose up -d
+docker compose pull && docker compose up -d     # готовый образ
+# или из исходников: git pull && docker compose build && docker compose up -d
 ```
 
 ### Капча и остановка
@@ -222,7 +245,10 @@ app/
   notify.py    Telegram: уведомления, команды и inline-кнопки
   settings.py  настройки из /menu: тихие часы, режим уведомлений (data/settings.json)
   main.py      точка входа: run | once | check | resume
+install.sh           установка одной командой (скачивает compose + мастер)
+setup.sh             мастер первой настройки: вопросы → .env → проверка → запуск
 docs/
+  quickstart.md      быстрый старт для новичков
   gmail-setup.md     настройка Gmail (пароль приложения, IMAP)
   telegram-setup.md  настройка Telegram-бота
 tests/               тесты логики (pytest)

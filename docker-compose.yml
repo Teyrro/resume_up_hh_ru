@@ -1,12 +1,15 @@
 services:
   hh-autoraise:
+    # Готовый образ из GitHub Container Registry (собирается GitHub Actions при пуше в master).
+    # Без исходников: docker compose pull. Из исходников: docker compose build.
+    image: ghcr.io/teyrro/resume_up_hh_ru:latest
     build: .
-    image: hh-autoraise:latest
     container_name: hh-autoraise
     restart: unless-stopped
     env_file: .env
     environment:
-      TZ: Asia/Novosibirsk
+      # Часовой пояс — из файла переменных (TZ=...), иначе Новосибирск.
+      TZ: ${TZ:-Asia/Novosibirsk}
       DATA_DIR: /data
     volumes:
       - ./data:/data
