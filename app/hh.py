@@ -412,21 +412,31 @@ def raise_resumes(page: Page, cfg: Config) -> RaiseResult:
     _check_captcha(page)
     _look_around(page)
 
+    # Баннер cookies внизу окна может перекрыть кнопку — закрываем, как сделал бы человек.
+    cookies = page.locator("[data-qa='cookies-policy-informer-accept']")
+    try:
+        if cookies.count() and cookies.first.is_visible():
+            _human_click(page, cookies.first)
+            _pause()
+    except Exception as e:
+        log.debug("Баннер cookies не закрыт: %s", e)
+
     clicked = 0
     details: list[str] = []
-    buttons = page.get_by_role("button", name=_RAISE_BUTTON)
-    count = buttons.count()
-    for i in range(count):
-        btn = buttons.nth(i)
+    # Кнопка ручного поднятия — «Поднять в поиске» (data-qa «resume-update-button_actions»,
+    # тот же, что у платной). Собираем заранее: после нажатия кнопка исчезает и nth() сдвигается.
+    buttons = page.get_by_role("button", name=_RAISE_BUTTON).element_handles()
+    for btn in buttons:
         try:
-            # «Поднять автоматически» — платная услуга, не нажимать ни при каких условиях.
-            if "resume-update-button_actions" in (btn.get_attribute("data-qa") or ""):
+            text = btn.inner_text().strip()
+            # «Поднять/Поднимать автоматически» — платная услуга, не нажимать ни при каких условиях.
+            if "автомат" in text.lower():
                 continue
             if btn.is_visible() and btn.is_enabled():
                 _pause()
                 _human_click(page, btn)
                 clicked += 1
-                details.append(f"нажата кнопка «{btn.inner_text().strip()}»")
+                details.append(f"нажата кнопка «{text}»")
                 _pause(2, 4)
         except Exception as e:
             log.warning("Не удалось нажать кнопку поднятия: %s", e)

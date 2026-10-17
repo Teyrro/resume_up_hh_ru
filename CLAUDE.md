@@ -40,13 +40,12 @@ dev.hh.ru: «поддержка API для соискателей прекращ
 - Страница `https://hh.ru/applicant/my_resumes`.
 - Текст до разрешения: «Поднять вручную можно 16 октября 2026 в 00:18» /
   «… сегодня в 04:24» (`data-qa="title-description"`).
-- Кнопка `data-qa="resume-update-button_actions"` с текстом «Поднять автоматически» — это
-  ПЛАТНОЕ автоподнятие, её не нажимать.
+- Кнопка ручного поднятия — «Поднять в поиске», `data-qa="resume-update-button
+  resume-update-button_actions"` — ТОТ ЖЕ data-qa, что у платной «Поднять/Поднимать
+  автоматически». Платную отсекаем по тексту («автомат»), не по data-qa (до 17.10.2026
+  из-за пропуска по data-qa кнопка не нажималась и работал только запасной путь).
+- Баннер cookies: `data-qa="cookies-policy-informer-accept"` («Понятно») — закрываем.
 - Вход по почте с кодом (селекторы в `login()`) — работает, проверено 15.10.2026.
-- **Кнопка ручного поднятия НЕ находится** регуляркой `_RAISE_BUTTON`: 16.10.2026 05:39
-  оба резюме подняты запасным путём. Точный текст кнопки неизвестен — при следующем
-  поднятии страница сохранится в `data/debug/*-raise-no-button.{png,html}` на сервере;
-  по ней поправить `_RAISE_BUTTON`.
 - Запасной путь `POST /applicant/resumes/touch` (resume=<hash>, undirectable=true,
   заголовок X-Xsrftoken из cookie `_xsrf`) — **работает** (16.10.2026).
 
@@ -109,10 +108,10 @@ CODE_WAIT_SECONDS=180, MIN_INTERVAL_MINUTES=240, JITTER_MIN_MINUTES=5,
 JITTER_MAX_MINUTES=180, MAX_LOGINS_PER_DAY=3, HEADLESS=1.
 
 ## Что осталось
-1. Поправить `_RAISE_BUTTON` по `data/debug/*-raise-no-button.html` с сервера.
+1. Убедиться по логам, что поднятие идёт кнопкой («нажата кнопка «Поднять в поиске»»).
 2. Повтор при таймауте загрузки страницы и уведомление «Непредвиденная ошибка» только
    при повторном сбое; логировать тело ответа Telegram при 400 (editMessageText).
-3. Сервер: перейти с git bundle на `git pull` из GitHub и `docker compose pull`.
+3. Сервер обновляется так: `cd /opt/hh-autoraise && git pull && docker compose pull && docker compose up -d`.
 4. Пользователю отозвать доступы старого hh-agent: Gmail OAuth
    (myaccount.google.com/permissions) и устройство ChatGPT/Codex.
 5. Идеи (не согласованы): уведомлять, если поднять было можно, но не вышло; подробности
