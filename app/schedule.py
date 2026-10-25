@@ -7,11 +7,23 @@ import re
 from datetime import datetime, timedelta, tzinfo
 
 _MONTHS = {
-    "января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5, "июня": 6,
-    "июля": 7, "августа": 8, "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
+    "января": 1,
+    "февраля": 2,
+    "марта": 3,
+    "апреля": 4,
+    "мая": 5,
+    "июня": 6,
+    "июля": 7,
+    "августа": 8,
+    "сентября": 9,
+    "октября": 10,
+    "ноября": 11,
+    "декабря": 12,
 }
 
-_FULL = re.compile(r"(\d{1,2})\s+([а-я]+)(?:\s+(\d{4}))?\s+в\s+(\d{1,2}):(\d{2})", re.IGNORECASE)
+_FULL = re.compile(
+    r"(\d{1,2})\s+([а-я]+)(?:\s+(\d{4}))?\s+в\s+(\d{1,2}):(\d{2})", re.IGNORECASE
+)
 _TODAY = re.compile(r"(сегодня|завтра)\s+в\s+(\d{1,2}):(\d{2})", re.IGNORECASE)
 _TIME_ONLY = re.compile(r"\bв\s+(\d{1,2}):(\d{2})")
 
@@ -33,21 +45,31 @@ def parse_available_at(text: str, now: datetime) -> datetime | None:
         return dt
     m = _TODAY.search(text)
     if m:
-        dt = now.replace(hour=int(m.group(2)), minute=int(m.group(3)), second=0, microsecond=0)
+        dt = now.replace(
+            hour=int(m.group(2)), minute=int(m.group(3)), second=0, microsecond=0
+        )
         if m.group(1).lower() == "завтра":
             dt += timedelta(days=1)
         return dt
     m = _TIME_ONLY.search(text)
     if m:
-        dt = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+        dt = now.replace(
+            hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0
+        )
         if dt < now - timedelta(minutes=5):
             dt += timedelta(days=1)
         return dt
     return None
 
 
-def next_run(now: datetime, available: list[datetime], min_interval_min: int,
-             jitter_min: int, jitter_max: int, rng: random.Random | None = None) -> datetime:
+def next_run(
+    now: datetime,
+    available: list[datetime],
+    min_interval_min: int,
+    jitter_min: int,
+    jitter_max: int,
+    rng: random.Random | None = None,
+) -> datetime:
     """Следующий запуск: ближайшее разрешённое время поднятия + случайная задержка.
 
     Задержка большая (по умолчанию до 3 ч), чтобы поднятия шли не ровно раз в 4 часа,
@@ -58,11 +80,12 @@ def next_run(now: datetime, available: list[datetime], min_interval_min: int,
     rng = rng or random.Random()
     jitter = timedelta(minutes=rng.uniform(jitter_min, jitter_max))
     future = [a for a in available if a > now]
-    if future:
-        target = min(future)
-    elif available:
-        target = now  # уже можно — поднимем после небольшой паузы
+    if len(future) < len(available):
+        # Хотя бы одно резюме можно поднять уже сейчас — не ждать времени остальных.
+        target = now
         jitter = min(jitter, timedelta(minutes=15))
+    elif future:
+        target = min(future)
     else:
         target = now + timedelta(minutes=min_interval_min)
     return max(target + jitter, now + timedelta(minutes=10))

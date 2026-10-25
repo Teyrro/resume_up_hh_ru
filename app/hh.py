@@ -403,6 +403,22 @@ def _touch_via_http(page: Page, cfg: Config, resume_id: str) -> bool:
         return False
 
 
+def _raise_buttons(page: Page) -> list[Locator]:
+    """Видимые кнопки бесплатного ручного поднятия (без платных «… автоматически»)."""
+    buttons = page.get_by_role("button", name=_RAISE_BUTTON)
+    result = []
+    for i in range(buttons.count()):
+        btn = buttons.nth(i)
+        try:
+            if "автомат" in btn.inner_text().lower():
+                continue  # платная услуга — не нажимать ни при каких условиях
+            if btn.is_visible() and btn.is_enabled():
+                result.append(btn)
+        except Exception:
+            continue
+    return result
+
+
 def raise_resumes(page: Page, cfg: Config) -> RaiseResult:
     tz = ZoneInfo(cfg.timezone)
     # Обычно страница уже открыта проверкой сессии — человек не стал бы её перезагружать.
@@ -424,22 +440,30 @@ def raise_resumes(page: Page, cfg: Config) -> RaiseResult:
     clicked = 0
     details: list[str] = []
     # Кнопка ручного поднятия — «Поднять в поиске» (data-qa «resume-update-button_actions»,
-    # тот же, что у платной). Собираем заранее: после нажатия кнопка исчезает и nth() сдвигается.
-    buttons = page.get_by_role("button", name=_RAISE_BUTTON).element_handles()
-    for btn in buttons:
+    # тот же, что у платной). После нажатия карточка перестраивается («Вы подняли резюме…»,
+    # «Дальше пусть поднимает бот») и остальные кнопки съезжают — поэтому ищем заново
+    # после каждого нажатия, а не по заранее собранному списку.
+    for _ in range(max(len(cfg.resume_ids), 1) + 2):
+        visible = _raise_buttons(page)
+        if not visible:
+            break
+        btn = visible[0]
         try:
             text = btn.inner_text().strip()
-            # «Поднять/Поднимать автоматически» — платная услуга, не нажимать ни при каких условиях.
-            if "автомат" in text.lower():
-                continue
-            if btn.is_visible() and btn.is_enabled():
-                _pause()
-                _human_click(page, btn)
-                clicked += 1
-                details.append(f"нажата кнопка «{text}»")
-                _pause(2, 4)
+            _pause()
+            _human_click(page, btn)
+            _pause(2, 4)
         except Exception as e:
             log.warning("Не удалось нажать кнопку поднятия: %s", e)
+            break
+        if len(_raise_buttons(page)) >= len(visible):
+            log.warning("Кнопка «%s» нажата, но не исчезла", text)
+            break
+        clicked += 1
+        details.append(f"нажата кнопка «{text}»")
+    left = len(_raise_buttons(page))
+    if left:
+        dump_debug(page, cfg, "raise-left")
 
     # Перечитываем страницу и собираем время следующего поднятия.
     page.reload(wait_until="domcontentloaded")
@@ -473,6 +497,12 @@ def raise_resumes(page: Page, cfg: Config) -> RaiseResult:
                 )
                 if d
             ]
+
+    # Кнопка всё ещё видна — это резюме можно поднять прямо сейчас: повторить в ближайшее
+    # время, а не ждать следующего разрешённого времени другого резюме.
+    if _raise_buttons(page):
+        available.append(now)
+        details.append("кнопка поднятия осталась — повтор в ближайшее время")
 
     if clicked == 0 and not available:
         dump_debug(page, cfg, "raise-unknown")

@@ -210,3 +210,10 @@ def test_settings_keep_each_other(tmp_path):
     set_notify_mode(path, "errors")
     assert get_quiet(path) == (23 * 60, 8 * 60)
     assert get_notify_mode(path) == "errors"
+
+
+def test_next_run_soon_if_one_resume_available_now():
+    # Одно резюме уже можно поднять (кнопка осталась), второе — через 4 часа.
+    avail = [NOW, NOW + timedelta(hours=4)]
+    nxt = next_run(NOW, avail, 240, 5, 180, random.Random(1))
+    assert nxt <= NOW + timedelta(minutes=15)
